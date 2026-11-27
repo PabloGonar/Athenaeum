@@ -3,7 +3,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "../services/storage";
 import { AthenaeumLogo } from "./AthenaeumLogo";
 
-export function WindowTitleBar() {
+interface WindowTitleBarProps {
+  opaque?: boolean;
+}
+
+export function WindowTitleBar({ opaque = false }: WindowTitleBarProps) {
   if (!isTauriRuntime()) {
     return null;
   }
@@ -13,8 +17,12 @@ export function WindowTitleBar() {
   return (
     <div
       data-testid="window-titlebar"
-      className="pointer-events-none fixed inset-x-0 top-0 z-[80] flex h-8 w-full shrink-0 items-center justify-between select-none"
-      style={{ background: "transparent", borderBottom: "none" }}
+      data-opaque={opaque ? "true" : "false"}
+      className="pointer-events-none fixed inset-x-0 top-0 z-[80] flex h-8 w-full shrink-0 items-center justify-between select-none transition-colors duration-200"
+      style={{
+        background: opaque ? "#0B0F17" : "transparent",
+        borderBottom: "none",
+      }}
     >
       {/* Non-interactive drag surface spanning brand emblem and open center bar */}
       <div
@@ -26,7 +34,7 @@ export function WindowTitleBar() {
           <AthenaeumLogo className="h-4 w-4 pointer-events-none" />
           <span
             className="pointer-events-none font-ui text-[0.58rem] uppercase tracking-[0.22em] text-[#E2B46D]/90"
-            style={{ textShadow: "0 1px 6px rgba(4, 9, 18, 0.85)" }}
+            style={opaque ? undefined : { textShadow: "0 1px 6px rgba(4, 9, 18, 0.85)" }}
           >
             Athenaeum
           </span>

@@ -1132,8 +1132,8 @@ export function App() {
       data-logical-date={logicalToday}
       className="relative h-screen w-screen overflow-hidden bg-[var(--bg-deep)] text-[var(--text-ivory)]"
     >
-      {/* Transparent 32px Top Window Titlebar (Tauri runtime only, artwork flows seamlessly behind it) */}
-      <WindowTitleBar />
+      {/* Context-Aware 32px Top Window Titlebar (opaque #0B0F17 on Settings/Calendar, transparent over artwork) */}
+      <WindowTitleBar opaque={activeMiniApp === "settings" || activeMiniApp === "calendar"} />
 
       {vaultToast && (
         <div

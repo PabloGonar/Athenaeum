@@ -101,7 +101,20 @@ export function MiniAppShell({
       {/* Locked non-scrolling full-room backdrop behind transparent shell (fills 0..100vh seamlessly behind transparent titlebar) */}
       {!opaque && resolvedRoomId && <RoomBackdrop roomId={resolvedRoomId} />}
 
-      {/* Dedicated 32px top flex row reserving space for the transparent desktop titlebar so headers never collide */}
+      {/* Unified subtle top-edge vignette spanning behind both the 32px titlebar row and the transparent mini-app header */}
+      {!opaque && (
+        <div
+          aria-hidden="true"
+          data-testid="miniapp-top-vignette"
+          className="pointer-events-none fixed inset-x-0 top-0 z-[5] h-[128px]"
+          style={{
+            background:
+              "linear-gradient(to bottom, rgba(7, 10, 16, 0.72) 0%, rgba(7, 10, 16, 0.35) 65%, transparent 100%)",
+          }}
+        />
+      )}
+
+      {/* Dedicated 32px top flex row reserving space for the desktop titlebar so headers never collide */}
       {hasDesktopTitlebar && (
         <div
           aria-hidden="true"
@@ -110,7 +123,72 @@ export function MiniAppShell({
         />
       )}
 
-      {/* Dedicated foreground scroll viewport starting cleanly below the titlebar row */}
+      {/* Top Return & Surface Ascent Bar (transparent over unified vignette on artwork views; solid #0B0F17 on opaque views) */}
+      <header
+        className={`relative z-20 flex shrink-0 flex-wrap items-center justify-between gap-4 px-8 py-4 md:px-14 ${
+          opaque
+            ? "border-b border-[var(--glass-border)]"
+            : "border-b border-[rgba(226,180,109,0.12)]"
+        }`}
+        style={{
+          background: opaque ? "#0B0F17" : "transparent",
+        }}
+      >
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={onClose}
+            data-testid="miniapp-return-btn"
+            className="chamber-return-btn group -ml-2 flex cursor-pointer items-center gap-2 rounded-[4px] border border-transparent px-[14px] py-[8px] text-[var(--text-ivory-soft)]/92 hover:border-[rgba(226,180,109,0.28)] hover:bg-[rgba(226,180,109,0.08)] hover:text-[#E2B46D] focus-visible:text-[#E2B46D] transition-colors duration-200"
+            style={opaque ? undefined : { textShadow: "0 1px 8px rgba(4, 8, 16, 0.85)" }}
+          >
+            <ArrowLeft
+              className="h-4 w-4 text-[var(--accent-brass)] group-hover:text-[#E2B46D] transition-colors duration-200"
+              strokeWidth={1.6}
+            />
+            <span className="font-ui text-[0.68rem] uppercase tracking-[0.18em]">
+              {returnLabel}
+            </span>
+            <span className="font-ui text-[0.58rem] uppercase tracking-[0.14em] opacity-65 group-hover:opacity-95 transition-opacity duration-200">
+              (Esc)
+            </span>
+          </button>
+
+          <div className="h-5 w-[1px] bg-[var(--glass-border)]" />
+
+          <div>
+            <h1
+              className="font-editorial text-[1.6rem] font-normal leading-none tracking-[0.04em] text-[var(--text-ivory)]"
+              style={opaque ? undefined : { textShadow: "0 2px 12px rgba(4, 8, 16, 0.85)" }}
+            >
+              {title}
+            </h1>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4">
+          {rightSlot ? <div>{rightSlot}</div> : null}
+
+          {isChamberRoom && navCtx.onAscendToSurface && (
+            <button
+              type="button"
+              onClick={navCtx.onAscendToSurface}
+              data-testid="miniapp-ascend-surface-btn"
+              title="Back to Overview"
+              className="chamber-return-btn group cursor-pointer px-2 py-1.5 flex items-center gap-1.5 font-ui text-[0.66rem] uppercase tracking-[0.18em] text-[var(--text-ivory-soft)]/92 hover:text-[#E2B46D] focus-visible:text-[#E2B46D] transition-colors duration-200 focus:outline-none"
+              style={opaque ? undefined : { textShadow: "0 1px 8px rgba(4, 8, 16, 0.85)" }}
+            >
+              <ArrowUp
+                className="h-3.5 w-3.5 text-[var(--accent-brass)] transition-transform duration-200 group-hover:-translate-y-0.5"
+                strokeWidth={1.6}
+              />
+              Back to Overview
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* Dedicated foreground scroll viewport starting cleanly below the titlebar + header rows */}
       <div
         data-testid="miniapp-scroll-viewport"
         style={{ contain: "layout style" }}
@@ -118,66 +196,6 @@ export function MiniAppShell({
           lockScroll ? "overflow-y-auto md:overflow-hidden" : "overflow-y-auto"
         }`}
       >
-        {/* Top Return & Surface Ascent Bar */}
-        <header
-          className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-4 border-b border-[var(--glass-border)] px-8 py-4 md:px-14"
-          style={{
-            backgroundColor: opaque
-              ? "#0B0F17"
-              : isChamberRoom
-              ? "rgba(18, 13, 10, 0.88)"
-              : "rgba(10, 16, 26, 0.92)",
-          }}
-        >
-          <div className="flex items-center gap-4">
-            <button
-              type="button"
-              onClick={onClose}
-              data-testid="miniapp-return-btn"
-              className="chamber-return-btn group -ml-2 flex cursor-pointer items-center gap-2 rounded-[4px] border border-transparent px-[14px] py-[8px] text-[var(--text-ivory-soft)]/88 hover:border-[rgba(226,180,109,0.28)] hover:bg-[rgba(226,180,109,0.08)] hover:text-[#E2B46D] focus-visible:text-[#E2B46D] transition-colors duration-200"
-            >
-              <ArrowLeft
-                className="h-4 w-4 text-[var(--accent-brass)] group-hover:text-[#E2B46D] transition-colors duration-200"
-                strokeWidth={1.6}
-              />
-              <span className="font-ui text-[0.68rem] uppercase tracking-[0.18em]">
-                {returnLabel}
-              </span>
-              <span className="font-ui text-[0.58rem] uppercase tracking-[0.14em] opacity-60 group-hover:opacity-90 transition-opacity duration-200">
-                (Esc)
-              </span>
-            </button>
-
-            <div className="h-5 w-[1px] bg-[var(--glass-border)]" />
-
-            <div>
-              <h1 className="font-editorial text-[1.6rem] font-normal leading-none tracking-[0.04em] text-[var(--text-ivory)]">
-                {title}
-              </h1>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {rightSlot ? <div>{rightSlot}</div> : null}
-
-            {isChamberRoom && navCtx.onAscendToSurface && (
-              <button
-                type="button"
-                onClick={navCtx.onAscendToSurface}
-                data-testid="miniapp-ascend-surface-btn"
-                title="Back to Overview"
-                className="chamber-return-btn group cursor-pointer p-0 flex items-center gap-1.5 font-ui text-[0.66rem] uppercase tracking-[0.18em] text-[var(--text-ivory-soft)]/82 hover:text-[#E2B46D] focus-visible:text-[#E2B46D] transition-colors duration-200 focus:outline-none"
-              >
-                <ArrowUp
-                  className="h-3.5 w-3.5 text-[var(--accent-brass)] transition-transform duration-200 group-hover:-translate-y-0.5"
-                  strokeWidth={1.6}
-                />
-                Back to Overview
-              </button>
-            )}
-          </div>
-        </header>
-
         <main
           className={`relative z-10 mx-auto w-full flex-1 bg-transparent px-8 md:px-12 ${
             wide ? "max-w-[1440px]" : "max-w-[1140px]"

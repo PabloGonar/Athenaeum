@@ -808,13 +808,23 @@ export function LibraryMiniApp({
       >
         <RoomBackdrop roomId="library" />
 
+        {/* Unified top-edge vignette spanning behind both the 32px titlebar row and the transparent reader header */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed inset-x-0 top-0 z-[5] h-[116px]"
+          style={{
+            background:
+              "linear-gradient(to bottom, rgba(7, 10, 16, 0.72) 0%, rgba(7, 10, 16, 0.35) 65%, transparent 100%)",
+          }}
+        />
+
         {/* Dedicated 32px top flex row reserving space for the transparent desktop titlebar */}
         {isTauriRuntime() && (
           <div aria-hidden="true" className="relative z-10 h-8 w-full shrink-0 bg-transparent" />
         )}
 
         {/* Top Thin Editorial Control Bar */}
-        <header className="relative z-10 shrink-0 flex items-center justify-between gap-3 border-b border-[var(--glass-border)] bg-[var(--surface-header)] px-4 py-2.5 backdrop-blur-xl">
+        <header className="relative z-10 shrink-0 flex items-center justify-between gap-3 border-b border-[rgba(226,180,109,0.12)] bg-transparent px-4 py-2.5">
           <div className="flex items-center gap-3 min-w-0 flex-1 overflow-hidden">
             <button
               type="button"
