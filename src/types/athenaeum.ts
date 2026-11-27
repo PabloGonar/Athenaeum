@@ -37,18 +37,20 @@ export interface QuoteItem {
 
 export interface HaLightPreset {
   name: string;
-  mode: "rgb" | "kelvin";
+  mode: "rgb" | "kelvin" | "scene";
   rgbColor: [number, number, number];
   kelvin: number;
-  brightnessPct: number; // 1..100%
+  brightnessPct: number; // 0..100%
+  sceneEntityId?: string;
 }
 
 export interface HaLightCommand {
-  mode: "rgb" | "kelvin";
+  mode: "rgb" | "kelvin" | "scene";
   rgbColor?: [number, number, number];
   kelvin?: number;
   brightnessPct: number;
   entityId?: string;
+  sceneEntityId?: string;
   transition?: number;
 }
 

@@ -46,10 +46,12 @@ fn default_daily_reading_target_pages() -> i64 {
 #[serde(rename_all = "camelCase")]
 pub struct HaLightPreset {
     pub name: String,
-    pub mode: String, // "rgb" | "kelvin"
+    pub mode: String, // "rgb" | "kelvin" | "scene"
     pub rgb_color: [u8; 3],
     pub kelvin: u32,
-    pub brightness_pct: u8, // 1..=100
+    pub brightness_pct: u8, // 0..=100
+    #[serde(default)]
+    pub scene_entity_id: String,
 }
 
 fn default_ha_focus_preset() -> HaLightPreset {
@@ -59,6 +61,7 @@ fn default_ha_focus_preset() -> HaLightPreset {
         rgb_color: [128, 0, 255],
         kelvin: 2700,
         brightness_pct: 45,
+        scene_entity_id: String::new(),
     }
 }
 
@@ -69,6 +72,7 @@ fn default_ha_non_focus_preset() -> HaLightPreset {
         rgb_color: [255, 200, 140],
         kelvin: 2700,
         brightness_pct: 45,
+        scene_entity_id: String::new(),
     }
 }
 
@@ -79,6 +83,7 @@ fn default_ha_reading_preset() -> HaLightPreset {
         rgb_color: [255, 198, 132],
         kelvin: 2700,
         brightness_pct: 45,
+        scene_entity_id: String::new(),
     }
 }
 
@@ -342,11 +347,11 @@ pub fn load_or_init_config(config_path: &PathBuf) -> Result<AthenaeumConfig, Str
                 cfg.preferred_music_player = default_preferred_music_player();
             }
             cfg.daily_reading_target_pages = cfg.daily_reading_target_pages.clamp(1, 500);
-            cfg.ha_focus_preset.brightness_pct = cfg.ha_focus_preset.brightness_pct.clamp(1, 100);
+            cfg.ha_focus_preset.brightness_pct = cfg.ha_focus_preset.brightness_pct.clamp(0, 100);
             cfg.ha_non_focus_preset.brightness_pct =
-                cfg.ha_non_focus_preset.brightness_pct.clamp(1, 100);
+                cfg.ha_non_focus_preset.brightness_pct.clamp(0, 100);
             cfg.ha_reading_preset.brightness_pct =
-                cfg.ha_reading_preset.brightness_pct.clamp(1, 100);
+                cfg.ha_reading_preset.brightness_pct.clamp(0, 100);
             let mut needs_persist = false;
             for q in &mut cfg.quotes {
                 if q.author.trim().eq_ignore_ascii_case("Athenaeum Notebook")

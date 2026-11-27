@@ -447,7 +447,27 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             Ok(Some(selected))
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let output = Command::new("osascript")
+            .args([
+                "-e",
+                "POSIX path of (choose file of type {\"pdf\", \"epub\"} with prompt \"Add Book to Athenaeum Library\")",
+            ])
+            .output()
+            .map_err(|e| format!("Failed launching macOS file picker: {e}"))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if selected.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(selected))
+        }
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         Ok(None)
     }

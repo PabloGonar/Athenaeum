@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Calendar as CalendarIcon,
   ChevronLeft,
   ChevronRight,
   Lock,
@@ -33,6 +34,13 @@ import type {
   TimeFormat,
 } from "../../types/athenaeum";
 
+export interface InitialCalendarEventDraft {
+  title: string;
+  date?: string;
+  startTime?: string;
+  durationMinutes?: number;
+}
+
 interface CalendarMiniAppProps {
   logicalToday: string;
   dayRolloverHour: number;
@@ -42,6 +50,8 @@ interface CalendarMiniAppProps {
   overrides: RecurringBlockOverride[];
   externalEvents: ExternalCalendarEvent[];
   goals: GoalItem[];
+  initialCreateEvent?: InitialCalendarEventDraft | null;
+  onConsumeInitialCreateEvent?: () => void;
   onUpsertBlock: (block: ScheduleBlock) => Promise<void>;
   onDeleteBlock: (id: string) => Promise<void>;
   onUpsertRecurringBlock: (block: RecurringFocusBlock) => Promise<void>;
@@ -52,6 +62,19 @@ interface CalendarMiniAppProps {
 }
 
 type CalendarViewMode = "day" | "3day" | "week";
+
+interface EventModalState {
+  mode: "create" | "edit_manual" | "edit_recurring";
+  blockId?: string;
+  recurringBlockId?: string;
+  origDate?: string;
+  title: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  durationMinutes: number;
+  category: string;
+}
 
 const HOUR_HEIGHT = 56; // px per hour (24h logical day = 1344px)
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -65,6 +88,21 @@ function formatColumnDate(iso: string): { weekday: string; day: string } {
   };
 }
 
+function diffMinutesBetweenHHMM(startHHMM: string, endHHMM: string): number {
+  const [sh, sm] = startHHMM.split(":").map(Number);
+  const [eh, em] = endHHMM.split(":").map(Number);
+  const startTotal = (sh || 0) * 60 + (sm || 0);
+  let endTotal = (eh || 0) * 60 + (em || 0);
+  if (endTotal <= startTotal) endTotal += 24 * 60;
+  return Math.max(5, Math.min(720, endTotal - startTotal));
+}
+
+function getDefaultNextHourHHMM(): string {
+  const now = new Date();
+  const nextHour = (now.getHours() + 1) % 24;
+  return `${String(nextHour).padStart(2, "0")}:00`;
+}
+
 export function CalendarMiniApp({
   logicalToday,
   dayRolloverHour,
@@ -74,6 +112,8 @@ export function CalendarMiniApp({
   overrides,
   externalEvents,
   goals,
+  initialCreateEvent,
+  onConsumeInitialCreateEvent,
   onUpsertBlock,
   onDeleteBlock,
   onUpsertRecurringBlock,
@@ -86,11 +126,8 @@ export function CalendarMiniApp({
   const [anchorDate, setAnchorDate] = useState<string>(logicalToday);
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
 
-  // Quick one-off block creator
-  const [newOneOffTitle, setNewOneOffTitle] = useState("");
-  const [newOneOffDate, setNewOneOffDate] = useState(logicalToday);
-  const [newOneOffStart, setNewOneOffStart] = useState("15:00");
-  const [newOneOffDuration, setNewOneOffDuration] = useState<number>(60);
+  // Unified Create / Edit Event Modal state
+  const [eventModal, setEventModal] = useState<EventModalState | null>(null);
 
   // Recurring Soft Block template creator inside side drawer
   const [recTitle, setRecTitle] = useState("");
@@ -100,22 +137,46 @@ export function CalendarMiniApp({
   const [recCadence, setRecCadence] = useState<RecurringBlockCadence>("daily");
   const [recSpecificDays, setRecSpecificDays] = useState<number[]>([0, 2, 4]);
 
-  // Drag / Resize live preview state
+  // Cross-day Drag / Resize live preview state
   const [dragPreview, setDragPreview] = useState<{
     itemId: string;
     mode: "move" | "resize";
+    targetDate: string;
     startMin: number;
     durationMin: number;
   } | null>(null);
   const dragMetaRef = useRef<{
     item: ResolvedScheduleItem;
     mode: "move" | "resize";
+    startClientX: number;
     startClientY: number;
+    origDate: string;
     origStartMin: number;
     origDurationMin: number;
+    hasMoved: boolean;
   } | null>(null);
 
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const dayColumnsGridRef = useRef<HTMLDivElement | null>(null);
+
+  // Open pre-filled Create Event Modal when triggered from Goals -> "Add to Calendar"
+  useEffect(() => {
+    if (!initialCreateEvent) return;
+    const start = initialCreateEvent.startTime || getDefaultNextHourHHMM();
+    const dur = Math.max(5, Math.min(720, initialCreateEvent.durationMinutes ?? 60));
+    const date = initialCreateEvent.date || logicalToday;
+    setAnchorDate(date);
+    setEventModal({
+      mode: "create",
+      title: initialCreateEvent.title,
+      date,
+      startTime: start,
+      endTime: addMinutesToHHMM(start, dur),
+      durationMinutes: dur,
+      category: "Focus Block",
+    });
+    onConsumeInitialCreateEvent?.();
+  }, [initialCreateEvent, logicalToday, onConsumeInitialCreateEvent]);
 
   // Auto-scroll vertical timeline cleanly to ~07:00 AM on initial open
   useEffect(() => {
@@ -124,6 +185,20 @@ export function CalendarMiniApp({
     const sevenAmMin = toLogicalMinutes("07:00", dayRolloverHour);
     el.scrollTop = Math.max(0, (sevenAmMin / 60) * HOUR_HEIGHT - 24);
   }, [dayRolloverHour]);
+
+  // Close event modal on Escape without dismissing the whole Calendar first
+  useEffect(() => {
+    if (!eventModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setEventModal(null);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [eventModal]);
 
   const visibleDates = useMemo(() => {
     if (viewMode === "day") return [anchorDate];
@@ -165,13 +240,35 @@ export function CalendarMiniApp({
     return (toLogicalMinutes(hhmm, dayRolloverHour) / 60) * HOUR_HEIGHT;
   }, [dayRolloverHour]);
 
-  // Global pointer listeners while dragging or resizing a Focus Block on the timeline
+  // Helper to resolve pointer X to target day column ISO date
+  const resolveTargetDateFromClientX = useCallback(
+    (clientX: number, fallbackDate: string): string => {
+      const gridEl = dayColumnsGridRef.current;
+      if (!gridEl || visibleDates.length <= 1) return fallbackDate;
+      const rect = gridEl.getBoundingClientRect();
+      if (rect.width <= 0) return fallbackDate;
+      const relX = clientX - rect.left;
+      const colWidth = rect.width / visibleDates.length;
+      const idx = Math.max(0, Math.min(visibleDates.length - 1, Math.floor(relX / colWidth)));
+      return visibleDates[idx] ?? fallbackDate;
+    },
+    [visibleDates]
+  );
+
+  // Global pointer listeners for cross-day drag & vertical resize (with 4px threshold so double-click works cleanly)
+  const [pointerTracking, setPointerTracking] = useState(false);
+
   useEffect(() => {
-    if (!dragPreview) return;
+    if (!pointerTracking) return;
 
     const onPointerMove = (e: PointerEvent) => {
       const meta = dragMetaRef.current;
       if (!meta) return;
+
+      const dist = Math.hypot(e.clientX - meta.startClientX, e.clientY - meta.startClientY);
+      if (!meta.hasMoved && dist < 4) return;
+      meta.hasMoved = true;
+
       const deltaMinRaw = ((e.clientY - meta.startClientY) / HOUR_HEIGHT) * 60;
       const snappedDelta = Math.round(deltaMinRaw / 15) * 15;
 
@@ -180,9 +277,11 @@ export function CalendarMiniApp({
           0,
           Math.min(1440 - meta.origDurationMin, meta.origStartMin + snappedDelta)
         );
+        const targetDate = resolveTargetDateFromClientX(e.clientX, meta.origDate);
         setDragPreview({
           itemId: meta.item.id,
           mode: "move",
+          targetDate,
           startMin: nextStart,
           durationMin: meta.origDurationMin,
         });
@@ -194,6 +293,7 @@ export function CalendarMiniApp({
         setDragPreview({
           itemId: meta.item.id,
           mode: "resize",
+          targetDate: meta.origDate,
           startMin: meta.origStartMin,
           durationMin: nextDur,
         });
@@ -203,8 +303,10 @@ export function CalendarMiniApp({
     const onPointerUp = () => {
       const meta = dragMetaRef.current;
       dragMetaRef.current = null;
+      setPointerTracking(false);
+
       setDragPreview((currentPreview) => {
-        if (meta && currentPreview) {
+        if (meta && meta.hasMoved && currentPreview) {
           const nextStartHHMM = fromLogicalMinutes(currentPreview.startMin, dayRolloverHour);
           const nextEndHHMM = addMinutesToHHMM(nextStartHHMM, currentPreview.durationMin);
 
@@ -213,19 +315,40 @@ export function CalendarMiniApp({
             if (orig) {
               void onUpsertBlock({
                 ...orig,
+                date: currentPreview.targetDate,
                 startTime: nextStartHHMM,
                 endTime: nextEndHHMM,
               });
             }
           } else if (meta.item.kind === "recurring") {
-            void onUpsertOverride({
-              blockId: meta.item.sourceId,
-              logicalDate: meta.item.date,
-              status: "rescheduled",
-              overrideStartTime: nextStartHHMM,
-              overrideDurationMinutes: currentPreview.durationMin,
-              updatedAt: new Date().toISOString(),
-            });
+            if (currentPreview.targetDate === meta.origDate) {
+              void onUpsertOverride({
+                blockId: meta.item.sourceId,
+                logicalDate: meta.item.date,
+                status: "rescheduled",
+                overrideStartTime: nextStartHHMM,
+                overrideDurationMinutes: currentPreview.durationMin,
+                updatedAt: new Date().toISOString(),
+              });
+            } else {
+              // Moving a recurring occurrence to another day skips original day & creates a moved manual block
+              void onUpsertOverride({
+                blockId: meta.item.sourceId,
+                logicalDate: meta.item.date,
+                status: "skipped",
+                overrideStartTime: null,
+                overrideDurationMinutes: null,
+                updatedAt: new Date().toISOString(),
+              });
+              void onUpsertBlock({
+                id: `sb-${Date.now()}`,
+                title: meta.item.title,
+                startTime: nextStartHHMM,
+                endTime: nextEndHHMM,
+                category: meta.item.category || "Focus Block",
+                date: currentPreview.targetDate,
+              });
+            }
           }
         }
         return null;
@@ -238,21 +361,133 @@ export function CalendarMiniApp({
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
     };
-  }, [dragPreview, dayRolloverHour, blocks, onUpsertBlock, onUpsertOverride]);
+  }, [
+    pointerTracking,
+    dayRolloverHour,
+    blocks,
+    onUpsertBlock,
+    onUpsertOverride,
+    resolveTargetDateFromClientX,
+  ]);
 
-  const handleCreateOneOff = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newOneOffTitle.trim();
-    if (!trimmed) return;
-    await onUpsertBlock({
-      id: `sb-${Date.now()}`,
-      title: trimmed,
-      startTime: newOneOffStart,
-      endTime: addMinutesToHHMM(newOneOffStart, newOneOffDuration),
+  const openCreateModalAt = (dateIso: string, startHHMM: string, defaultDuration = 60) => {
+    setEventModal({
+      mode: "create",
+      title: "",
+      date: dateIso,
+      startTime: startHHMM,
+      endTime: addMinutesToHHMM(startHHMM, defaultDuration),
+      durationMinutes: defaultDuration,
       category: "Focus Block",
-      date: newOneOffDate,
     });
-    setNewOneOffTitle("");
+  };
+
+  const openEditModalForItem = (item: ResolvedScheduleItem) => {
+    if (item.kind === "external_ics") return;
+    if (item.kind === "manual") {
+      const orig = blocks.find((b) => b.id === item.sourceId);
+      const start = orig?.startTime || item.startTime;
+      const end = orig?.endTime || item.endTime;
+      setEventModal({
+        mode: "edit_manual",
+        blockId: item.sourceId,
+        origDate: orig?.date || item.date,
+        title: orig?.title || item.title,
+        date: orig?.date || item.date,
+        startTime: start,
+        endTime: end,
+        durationMinutes: diffMinutesBetweenHHMM(start, end),
+        category: orig?.category || item.category || "Focus Block",
+      });
+    } else if (item.kind === "recurring") {
+      setEventModal({
+        mode: "edit_recurring",
+        recurringBlockId: item.sourceId,
+        origDate: item.date,
+        title: item.title,
+        date: item.date,
+        startTime: item.startTime,
+        endTime: item.endTime,
+        durationMinutes: item.durationMinutes,
+        category: item.category || "Focus Block",
+      });
+    }
+  };
+
+  const handleSaveEventModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!eventModal) return;
+    const trimmedTitle = eventModal.title.trim();
+    if (!trimmedTitle) return;
+
+    const safeDuration = Math.max(5, Math.min(720, Math.round(eventModal.durationMinutes || 60)));
+    const resolvedEnd = addMinutesToHHMM(eventModal.startTime, safeDuration);
+
+    if (eventModal.mode === "create") {
+      await onUpsertBlock({
+        id: `sb-${Date.now()}`,
+        title: trimmedTitle,
+        date: eventModal.date,
+        startTime: eventModal.startTime,
+        endTime: resolvedEnd,
+        category: eventModal.category.trim() || "Focus Block",
+      });
+    } else if (eventModal.mode === "edit_manual" && eventModal.blockId) {
+      await onUpsertBlock({
+        id: eventModal.blockId,
+        title: trimmedTitle,
+        date: eventModal.date,
+        startTime: eventModal.startTime,
+        endTime: resolvedEnd,
+        category: eventModal.category.trim() || "Focus Block",
+      });
+    } else if (eventModal.mode === "edit_recurring" && eventModal.recurringBlockId) {
+      if (eventModal.date === eventModal.origDate) {
+        await onUpsertOverride({
+          blockId: eventModal.recurringBlockId,
+          logicalDate: eventModal.date,
+          status: "rescheduled",
+          overrideStartTime: eventModal.startTime,
+          overrideDurationMinutes: safeDuration,
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        await onUpsertOverride({
+          blockId: eventModal.recurringBlockId,
+          logicalDate: eventModal.origDate || eventModal.date,
+          status: "skipped",
+          overrideStartTime: null,
+          overrideDurationMinutes: null,
+          updatedAt: new Date().toISOString(),
+        });
+        await onUpsertBlock({
+          id: `sb-${Date.now()}`,
+          title: trimmedTitle,
+          date: eventModal.date,
+          startTime: eventModal.startTime,
+          endTime: resolvedEnd,
+          category: eventModal.category.trim() || "Focus Block",
+        });
+      }
+    }
+    setEventModal(null);
+  };
+
+  const handleDeleteEventModal = async () => {
+    if (!eventModal) return;
+    if (eventModal.mode === "edit_manual" && eventModal.blockId) {
+      await onDeleteBlock(eventModal.blockId);
+    } else if (eventModal.mode === "edit_recurring" && eventModal.recurringBlockId) {
+      await onUpsertOverride({
+        blockId: eventModal.recurringBlockId,
+        logicalDate: eventModal.origDate || eventModal.date,
+        status: "skipped",
+        overrideStartTime: null,
+        overrideDurationMinutes: null,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    setEventModal(null);
   };
 
   const handleCreateRecurring = async (e: React.FormEvent) => {
@@ -265,7 +500,7 @@ export function CalendarMiniApp({
       linkedGoalId: recLinkedGoalId || null,
       category: "Focus Block",
       startTime: recStartTime,
-      durationMinutes: recDuration,
+      durationMinutes: Math.max(5, Math.min(720, Math.round(recDuration || 60))),
       cadence: recCadence,
       specificDays: recCadence === "specific_days" ? recSpecificDays : [],
       active: true,
@@ -280,12 +515,13 @@ export function CalendarMiniApp({
   return (
     <MiniAppShell
       title="Full Calendar"
-      subtitle={`Logical day timeline (${String(dayRolloverHour).padStart(2, "0")}:00 rollover) · Read-only .ics events + conflict-aware Focus Blocks`}
+      opaque
+      wide
       onClose={onClose}
       rightSlot={
         <div className="flex items-center gap-3">
           {/* Day / 3-Day / Week Switcher */}
-          <div className="flex items-center rounded-full border border-[var(--glass-border)] bg-[var(--surface-inner)] p-0.5">
+          <div className="flex items-center rounded-[4px] border border-[var(--glass-border)] bg-[#111724] p-0.5">
             {(
               [
                 ["day", "Day"],
@@ -299,9 +535,9 @@ export function CalendarMiniApp({
                 onClick={() => setViewMode(m)}
                 data-testid={`calendar-view-${m}`}
                 aria-pressed={viewMode === m}
-                className={`cursor-pointer rounded-full px-3.5 py-1 font-ui text-[0.62rem] uppercase tracking-[0.14em] border-0 transition-colors ${
+                className={`cursor-pointer rounded-[3px] px-3.5 py-1 font-ui text-[0.62rem] uppercase tracking-[0.14em] border-0 transition-colors ${
                   viewMode === m
-                    ? "bg-[var(--surface-panel-hover)] text-[var(--text-ivory)]"
+                    ? "bg-[rgba(226,180,109,0.18)] text-[var(--text-ivory)]"
                     : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text-ivory-soft)]"
                 }`}
               >
@@ -312,37 +548,47 @@ export function CalendarMiniApp({
 
           <button
             type="button"
+            onClick={() => openCreateModalAt(anchorDate, getDefaultNextHourHHMM(), 60)}
+            data-testid="calendar-new-event-btn"
+            className="cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.48)] bg-[rgba(226,180,109,0.14)] px-3.5 py-1.5 flex items-center gap-1.5 font-ui text-[0.64rem] uppercase tracking-[0.14em] text-[var(--text-ivory)] hover:bg-[rgba(226,180,109,0.24)] transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5 text-[#E2B46D]" />
+            New Event
+          </button>
+
+          <button
+            type="button"
             onClick={() => setDrawerOpen((v) => !v)}
             data-testid="calendar-recurring-drawer-btn"
             aria-pressed={drawerOpen}
-            className={`smoked-glass smoked-glass-hover cursor-pointer rounded-full px-4 py-1.5 flex items-center gap-1.5 font-ui text-[0.64rem] uppercase tracking-[0.14em] border ${
+            className={`cursor-pointer rounded-[3px] px-3.5 py-1.5 flex items-center gap-1.5 font-ui text-[0.64rem] uppercase tracking-[0.14em] border transition-colors ${
               drawerOpen
-                ? "border-[#C5A059]/60 text-[#e4c27c]"
-                : "border-[var(--glass-border)] text-[var(--text-ivory-soft)]"
+                ? "border-[#C5A059]/60 bg-[#C5A059]/14 text-[#e4c27c]"
+                : "border-[var(--glass-border)] bg-[#111724] text-[var(--text-ivory-soft)] hover:border-[rgba(226,180,109,0.38)]"
             }`}
           >
             <Repeat className="h-3.5 w-3.5 text-[#C5A059]" />
-            Recurring Blocks ({recurringBlocks.length})
+            Recurring ({recurringBlocks.length})
           </button>
         </div>
       }
     >
       <div data-testid="calendar-overlay-view" className="space-y-4 pb-8">
-        {/* Top Bar: Date Navigation + Quick One-Off Block Form */}
+        {/* Top Bar: Date Navigation + Subtle Interaction Hint */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => setAnchorDate((d) => shiftIsoDate(d, -stepDays))}
               aria-label="Previous range"
-              className="smoked-glass smoked-glass-hover cursor-pointer rounded-full p-1.5 text-[var(--text-ivory-soft)]"
+              className="cursor-pointer rounded-[3px] border border-[var(--glass-border)] bg-[#111724] p-1.5 text-[var(--text-ivory-soft)] hover:border-[rgba(226,180,109,0.4)] hover:text-[var(--text-ivory)]"
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
             <button
               type="button"
               onClick={() => setAnchorDate(logicalToday)}
-              className="cursor-pointer rounded-full border border-[rgba(143,184,163,0.32)] bg-transparent px-3.5 py-1 font-ui text-[0.62rem] uppercase tracking-[0.16em] text-[var(--accent-luminous)] hover:text-[var(--text-ivory)]"
+              className="cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.38)] bg-[#111724] px-3.5 py-1 font-ui text-[0.62rem] uppercase tracking-[0.16em] text-[#E2B46D] hover:bg-[rgba(226,180,109,0.14)]"
             >
               Today
             </button>
@@ -350,61 +596,22 @@ export function CalendarMiniApp({
               type="button"
               onClick={() => setAnchorDate((d) => shiftIsoDate(d, stepDays))}
               aria-label="Next range"
-              className="smoked-glass smoked-glass-hover cursor-pointer rounded-full p-1.5 text-[var(--text-ivory-soft)]"
+              className="cursor-pointer rounded-[3px] border border-[var(--glass-border)] bg-[#111724] p-1.5 text-[var(--text-ivory-soft)] hover:border-[rgba(226,180,109,0.4)] hover:text-[var(--text-ivory)]"
             >
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>
 
-          <form
-            onSubmit={(e) => void handleCreateOneOff(e)}
-            className="smoked-glass rounded-full px-4 py-1.5 flex flex-wrap items-center gap-2.5"
-          >
-            <input
-              type="text"
-              value={newOneOffTitle}
-              onChange={(e) => setNewOneOffTitle(e.target.value)}
-              placeholder="Quick one-off Focus Block..."
-              className="w-[190px] bg-transparent border-0 font-reading text-[0.92rem] text-[var(--text-ivory)] placeholder:text-[var(--text-muted)] focus:outline-none"
-            />
-            <input
-              type="date"
-              value={newOneOffDate}
-              onChange={(e) => setNewOneOffDate(e.target.value)}
-              className="bg-[var(--surface-inner)] border border-[var(--glass-border)] rounded-md px-2 py-0.5 font-ui tabular-nums text-[0.68rem] text-[var(--text-ivory)]"
-            />
-            <input
-              type="time"
-              value={newOneOffStart}
-              onChange={(e) => setNewOneOffStart(e.target.value)}
-              className="bg-[var(--surface-inner)] border border-[var(--glass-border)] rounded-md px-2 py-0.5 font-ui tabular-nums text-[0.68rem] text-[var(--text-ivory)]"
-            />
-            <select
-              value={newOneOffDuration}
-              onChange={(e) => setNewOneOffDuration(Number(e.target.value))}
-              className="bg-[var(--surface-inner)] border border-[var(--glass-border)] rounded-md px-2 py-0.5 font-ui tabular-nums text-[0.68rem] text-[var(--text-ivory)]"
-            >
-              {[30, 45, 60, 90, 120].map((m) => (
-                <option key={m} value={m}>
-                  {m}m
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              className="cursor-pointer rounded-full border border-[rgba(143,184,163,0.4)] bg-[rgba(143,184,163,0.14)] px-3 py-0.5 font-ui text-[0.6rem] uppercase tracking-[0.14em] text-[var(--text-ivory)] flex items-center gap-1"
-            >
-              <Plus className="h-3 w-3" />
-              Add
-            </button>
-          </form>
+          <div className="font-ui text-[0.62rem] tracking-[0.08em] text-[var(--text-muted)]">
+            Double-click any slot to create · Double-click an event to edit · Drag across days to reschedule
+          </div>
         </div>
 
         {/* Displaced Conflicts Banner across visible days */}
         {allDisplaced.length > 0 && (
           <div
             data-testid="calendar-displaced-banner"
-            className="smoked-glass rounded-[12px] border border-[#C5A059]/40 px-5 py-3.5 space-y-2"
+            className="rounded-[8px] border border-[#C5A059]/40 bg-[#121824] px-5 py-3.5 space-y-2"
           >
             <div className="flex items-center gap-2 font-ui text-[0.6rem] uppercase tracking-[0.2em] text-[#e4c27c]">
               <AlertTriangle className="h-3.5 w-3.5" />
@@ -414,7 +621,7 @@ export function CalendarMiniApp({
               {allDisplaced.map((d) => (
                 <div
                   key={`${d.block.id}-${d.logicalDate}`}
-                  className="rounded-[9px] border border-[var(--glass-border)] bg-[var(--surface-inner)] px-3.5 py-2 flex flex-wrap items-center gap-3"
+                  className="rounded-[6px] border border-[var(--glass-border)] bg-[#0E1420] px-3.5 py-2 flex flex-wrap items-center gap-3"
                 >
                   <div>
                     <div className="font-editorial text-[0.98rem] text-[var(--text-ivory)]">
@@ -442,7 +649,7 @@ export function CalendarMiniApp({
                             updatedAt: new Date().toISOString(),
                           })
                         }
-                        className="cursor-pointer rounded-full border border-[rgba(143,184,163,0.4)] bg-[rgba(143,184,163,0.12)] px-2.5 py-0.5 font-ui tabular-nums text-[0.58rem] text-[var(--text-ivory)] hover:bg-[rgba(143,184,163,0.24)]"
+                        className="cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.4)] bg-[rgba(226,180,109,0.12)] px-2.5 py-0.5 font-ui tabular-nums text-[0.58rem] text-[var(--text-ivory)] hover:bg-[rgba(226,180,109,0.24)]"
                       >
                         Move to {formatTimeHHMM(s.startTime, timeFormat)}
                       </button>
@@ -470,239 +677,302 @@ export function CalendarMiniApp({
           </div>
         )}
 
-        {/* Main Workspace: Vertical Time-Block Timeline + Optional Recurring Blocks Side Drawer */}
+        {/* Main Workspace: Unified Scroll Container (Sticky Headers + 24h Time Grid) + Optional Recurring Drawer */}
         <div className="flex gap-5 items-start">
-          <div className="flex-1 min-w-0 smoked-glass rounded-[14px] overflow-hidden border border-[var(--glass-border)]">
-            {/* Day Column Headers */}
-            <div className="flex border-b border-[var(--glass-border)] bg-[var(--surface-inner)]">
-              <div className="w-[64px] shrink-0 py-3 text-center font-ui text-[0.56rem] uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                3:00+
-              </div>
-              <div
-                className="flex-1 grid"
-                style={{ gridTemplateColumns: `repeat(${visibleDates.length}, minmax(0, 1fr))` }}
-              >
-                {visibleDates.map((d) => {
-                  const lbl = formatColumnDate(d);
-                  const isToday = d === logicalToday;
-                  return (
-                    <div
-                      key={d}
-                      className={`py-2.5 px-3 border-l border-[rgba(214,224,212,0.08)] flex items-baseline justify-between ${
-                        isToday ? "bg-[rgba(143,184,163,0.09)]" : ""
-                      }`}
-                    >
-                      <span
-                        className={`font-editorial text-[1.06rem] ${
-                          isToday ? "text-[var(--text-ivory)]" : "text-[var(--text-ivory-soft)]"
-                        }`}
-                      >
-                        {lbl.weekday}
-                      </span>
-                      <span className="font-ui tabular-nums text-[0.64rem] text-[var(--text-muted)]">
-                        {lbl.day}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Scrollable 24-Hour Logical Day Vertical Grid */}
+          <div className="flex-1 min-w-0 rounded-[10px] overflow-hidden border border-[var(--glass-border)] bg-[#0E131D]">
+            {/* Unified scroll container with scrollbar-gutter: stable so day headers and vertical dividers align pixel-for-pixel */}
             <div
               ref={timelineScrollRef}
               data-testid="calendar-timeline-grid"
-              className="relative h-[64vh] min-h-[480px] overflow-y-auto flex select-none"
+              style={{ scrollbarGutter: "stable" }}
+              className="relative h-[68vh] min-h-[500px] overflow-y-auto overflow-x-auto select-none"
             >
-              {/* Left Hour Axis (3:00 through 2:00 next morning) */}
+              {/* Sticky Day Column Headers INSIDE the exact same scroll container */}
               <div
-                className="w-[64px] shrink-0 relative bg-[var(--surface-inner)]"
-                style={{ height: 24 * HOUR_HEIGHT }}
+                data-testid="calendar-sticky-header"
+                className="sticky top-0 z-30 flex border-b border-[var(--glass-border)] bg-[#0B0F17]"
               >
-                {Array.from({ length: 24 }, (_, slot) => (
-                  <div
-                    key={slot}
-                    style={{ top: slot * HOUR_HEIGHT }}
-                    className="absolute inset-x-0 pr-2.5 -translate-y-2 text-right font-ui tabular-nums text-[0.6rem] text-[var(--text-muted)]"
-                  >
-                    {formatLogicalHourTime(slot, dayRolloverHour, timeFormat)}
-                  </div>
-                ))}
+                <div className="w-[64px] shrink-0 py-3 text-center font-ui text-[0.56rem] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                  {String(dayRolloverHour).padStart(2, "0")}:00+
+                </div>
+                <div
+                  className="flex-1 grid"
+                  style={{ gridTemplateColumns: `repeat(${visibleDates.length}, minmax(0, 1fr))` }}
+                >
+                  {visibleDates.map((d) => {
+                    const lbl = formatColumnDate(d);
+                    const isToday = d === logicalToday;
+                    return (
+                      <div
+                        key={d}
+                        className={`py-2.5 px-3 border-l border-[rgba(214,224,212,0.08)] flex items-baseline justify-between ${
+                          isToday ? "bg-[rgba(226,180,109,0.1)]" : "bg-[#0B0F17]"
+                        }`}
+                      >
+                        <span
+                          className={`font-editorial text-[1.06rem] ${
+                            isToday ? "text-[#E2B46D]" : "text-[var(--text-ivory-soft)]"
+                          }`}
+                        >
+                          {lbl.weekday}
+                        </span>
+                        <span className="font-ui tabular-nums text-[0.64rem] text-[var(--text-muted)]">
+                          {lbl.day}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* Day Columns */}
-              <div
-                className="flex-1 grid relative"
-                style={{
-                  height: 24 * HOUR_HEIGHT,
-                  gridTemplateColumns: `repeat(${visibleDates.length}, minmax(0, 1fr))`,
-                }}
-              >
-                {resolvedColumns.map((col) => (
-                  <div
-                    key={col.dateIso}
-                    className="relative border-l border-[rgba(214,224,212,0.08)]"
-                    style={{ height: 24 * HOUR_HEIGHT }}
-                  >
-                    {/* Subtle hourly gridlines */}
-                    {Array.from({ length: 24 }, (_, slot) => (
-                      <div
-                        key={slot}
-                        style={{ top: slot * HOUR_HEIGHT, height: HOUR_HEIGHT }}
-                        className="absolute inset-x-0 border-t border-[rgba(214,224,212,0.05)]"
-                      />
-                    ))}
+              {/* 24-Hour Logical Day Vertical Grid Body */}
+              <div className="flex relative">
+                {/* Left Hour Axis */}
+                <div
+                  className="w-[64px] shrink-0 relative bg-[#0B0F17]"
+                  style={{ height: 24 * HOUR_HEIGHT }}
+                >
+                  {Array.from({ length: 24 }, (_, slot) => (
+                    <div
+                      key={slot}
+                      style={{ top: slot * HOUR_HEIGHT }}
+                      className="absolute inset-x-0 pr-2.5 -translate-y-2 text-right font-ui tabular-nums text-[0.6rem] text-[var(--text-muted)]"
+                    >
+                      {formatLogicalHourTime(slot, dayRolloverHour, timeFormat)}
+                    </div>
+                  ))}
+                </div>
 
-                    {/* Live current time line on Today */}
-                    {col.dateIso === logicalToday && (
-                      <div
-                        style={{ top: nowIndicatorTop }}
-                        className="pointer-events-none absolute inset-x-0 z-20 flex items-center"
-                      >
-                        <span className="h-2 w-2 -ml-1 rounded-full bg-[#C5A059]" />
-                        <span className="h-[1.5px] flex-1 bg-[#C5A059]/75" />
-                      </div>
-                    )}
+                {/* Day Columns */}
+                <div
+                  ref={dayColumnsGridRef}
+                  className="flex-1 grid relative"
+                  style={{
+                    height: 24 * HOUR_HEIGHT,
+                    gridTemplateColumns: `repeat(${visibleDates.length}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {resolvedColumns.map((col) => {
+                    const isDropTarget =
+                      dragPreview &&
+                      dragPreview.mode === "move" &&
+                      dragPreview.targetDate === col.dateIso;
 
-                    {/* Placed Events & Draggable/Resizable Focus Blocks */}
-                    {col.items
+                    // Render items belonging to this column OR a cross-day dragged item hovering over this column
+                    const columnItems = col.items
                       .filter((it) => !it.allDay)
-                      .map((item) => {
-                        const isExternal = item.kind === "external_ics";
-                        const previewing =
-                          dragPreview && dragPreview.itemId === item.id ? dragPreview : null;
-                        const effStartMin = previewing
-                          ? previewing.startMin
-                          : item.startLogicalMin;
-                        const effDuration = previewing
-                          ? previewing.durationMin
-                          : item.durationMinutes;
-                        const topPx = (effStartMin / 60) * HOUR_HEIGHT;
-                        const heightPx = Math.max(26, (effDuration / 60) * HOUR_HEIGHT);
-                        const effStartLabel = formatTimeHHMM(
-                          fromLogicalMinutes(effStartMin, dayRolloverHour),
-                          timeFormat
-                        );
+                      .filter((it) => {
+                        if (
+                          dragPreview &&
+                          dragPreview.itemId === it.id &&
+                          dragPreview.targetDate !== col.dateIso
+                        ) {
+                          return false;
+                        }
+                        return true;
+                      });
 
-                        return (
+                    // Check if a dragged item from another column is hovering over this column
+                    const incomingDragItem =
+                      dragPreview && dragPreview.targetDate === col.dateIso
+                        ? resolvedColumns
+                            .flatMap((c) => c.items)
+                            .find(
+                              (it) =>
+                                it.id === dragPreview.itemId && it.date !== col.dateIso
+                            ) ?? null
+                        : null;
+
+                    const itemsToRender = incomingDragItem
+                      ? [...columnItems, incomingDragItem]
+                      : columnItems;
+
+                    return (
+                      <div
+                        key={col.dateIso}
+                        data-testid={`calendar-col-${col.dateIso}`}
+                        onDoubleClick={(e) => {
+                          const target = e.target as HTMLElement;
+                          if (target.closest("[data-calendar-event='true']")) return;
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const relY = Math.max(0, e.clientY - rect.top);
+                          const clickedMinRaw = (relY / HOUR_HEIGHT) * 60;
+                          const snappedMin = Math.max(
+                            0,
+                            Math.min(1425, Math.floor(clickedMinRaw / 15) * 15)
+                          );
+                          const startHHMM = fromLogicalMinutes(snappedMin, dayRolloverHour);
+                          openCreateModalAt(col.dateIso, startHHMM, 60);
+                        }}
+                        className={`relative border-l border-[rgba(214,224,212,0.08)] transition-colors ${
+                          isDropTarget ? "bg-[rgba(226,180,109,0.06)]" : ""
+                        }`}
+                        style={{ height: 24 * HOUR_HEIGHT }}
+                      >
+                        {/* Subtle hourly gridlines */}
+                        {Array.from({ length: 24 }, (_, slot) => (
                           <div
-                            key={item.id}
-                            data-testid={
-                              isExternal ? "calendar-ics-block" : "calendar-focus-block"
-                            }
-                            style={{ top: topPx, height: heightPx }}
-                            onPointerDown={(e) => {
-                              if (isExternal) return;
-                              const target = e.target as HTMLElement;
-                              if (target.closest("button")) return;
-                              e.stopPropagation();
-                              dragMetaRef.current = {
-                                item,
-                                mode: "move",
-                                startClientY: e.clientY,
-                                origStartMin: item.startLogicalMin,
-                                origDurationMin: item.durationMinutes,
-                              };
-                              setDragPreview({
-                                itemId: item.id,
-                                mode: "move",
-                                startMin: item.startLogicalMin,
-                                durationMin: item.durationMinutes,
-                              });
-                            }}
-                            className={`group absolute left-1.5 right-1.5 z-10 rounded-[8px] border px-2.5 py-1.5 overflow-hidden transition-shadow ${
-                              isExternal
-                                ? "border-[#C5A059]/50 bg-[#1a1a12]/88 cursor-default"
-                                : "border-[rgba(143,184,163,0.45)] bg-[var(--surface-panel-hover)] hover:border-[var(--accent-luminous)] cursor-grab active:cursor-grabbing"
-                            } ${previewing ? "ring-1 ring-[#C5A059] shadow-xl z-30" : ""}`}
-                          >
-                            <div className="flex items-start justify-between gap-1.5">
-                              <div className="min-w-0 flex-1">
-                                <div
-                                  className={`font-editorial leading-tight text-[var(--text-ivory)] truncate ${
-                                    viewMode === "week" ? "text-[0.8rem]" : "text-[0.94rem]"
-                                  }`}
-                                >
-                                  {item.title}
-                                </div>
-                                <div className="font-ui tabular-nums text-[0.58rem] text-[var(--text-muted)] truncate">
-                                  {effStartLabel} · {effDuration}m
-                                  {item.kind === "recurring" && viewMode !== "week"
-                                    ? " · Soft Block"
-                                    : ""}
-                                </div>
-                              </div>
+                            key={slot}
+                            style={{ top: slot * HOUR_HEIGHT, height: HOUR_HEIGHT }}
+                            className="pointer-events-none absolute inset-x-0 border-t border-[rgba(214,224,212,0.05)]"
+                          />
+                        ))}
 
-                              {isExternal ? (
-                                <Lock className="h-3 w-3 shrink-0 text-[#C5A059]/75" />
-                              ) : (
-                                <div
-                                  className={`items-center gap-1 shrink-0 transition-opacity ${
-                                    viewMode === "week"
-                                      ? "hidden group-hover:flex"
-                                      : "flex opacity-80 group-hover:opacity-100"
-                                  }`}
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onStartFocusBlock(item.title, effDuration);
-                                    }}
-                                    data-testid="calendar-start-focus-btn"
-                                    title="Start Focus Session"
-                                    className="cursor-pointer rounded-full border border-[rgba(143,184,163,0.45)] bg-[rgba(143,184,163,0.18)] px-2 py-0.5 flex items-center gap-1 font-ui text-[0.54rem] uppercase tracking-[0.1em] text-[var(--text-ivory)] hover:bg-[rgba(143,184,163,0.32)]"
+                        {/* Live current time line on Today */}
+                        {col.dateIso === logicalToday && (
+                          <div
+                            style={{ top: nowIndicatorTop }}
+                            className="pointer-events-none absolute inset-x-0 z-20 flex items-center"
+                          >
+                            <span className="h-2 w-2 -ml-1 rounded-full bg-[#C5A059]" />
+                            <span className="h-[1.5px] flex-1 bg-[#C5A059]/75" />
+                          </div>
+                        )}
+
+                        {/* Placed Events & Draggable/Resizable Focus Blocks */}
+                        {itemsToRender.map((item) => {
+                          const isExternal = item.kind === "external_ics";
+                          const previewing =
+                            dragPreview && dragPreview.itemId === item.id ? dragPreview : null;
+                          const effStartMin = previewing
+                            ? previewing.startMin
+                            : item.startLogicalMin;
+                          const effDuration = previewing
+                            ? previewing.durationMin
+                            : item.durationMinutes;
+                          const topPx = (effStartMin / 60) * HOUR_HEIGHT;
+                          const heightPx = Math.max(26, (effDuration / 60) * HOUR_HEIGHT);
+                          const effStartLabel = formatTimeHHMM(
+                            fromLogicalMinutes(effStartMin, dayRolloverHour),
+                            timeFormat
+                          );
+
+                          return (
+                            <div
+                              key={item.id}
+                              data-calendar-event="true"
+                              data-testid={
+                                isExternal ? "calendar-ics-block" : "calendar-focus-block"
+                              }
+                              style={{ top: topPx, height: heightPx }}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation();
+                                if (!isExternal) {
+                                  openEditModalForItem(item);
+                                }
+                              }}
+                              onPointerDown={(e) => {
+                                if (isExternal || e.button !== 0) return;
+                                const target = e.target as HTMLElement;
+                                if (target.closest("button")) return;
+                                e.stopPropagation();
+                                dragMetaRef.current = {
+                                  item,
+                                  mode: "move",
+                                  startClientX: e.clientX,
+                                  startClientY: e.clientY,
+                                  origDate: item.date,
+                                  origStartMin: item.startLogicalMin,
+                                  origDurationMin: item.durationMinutes,
+                                  hasMoved: false,
+                                };
+                                setPointerTracking(true);
+                              }}
+                              className={`group absolute left-1.5 right-1.5 z-10 rounded-[6px] border px-2.5 py-1.5 overflow-hidden transition-shadow ${
+                                isExternal
+                                  ? "border-[#C5A059]/50 bg-[#1B1810] cursor-default"
+                                  : "border-[rgba(226,180,109,0.38)] bg-[#151E2E] hover:border-[#E2B46D] cursor-grab active:cursor-grabbing"
+                              } ${previewing ? "ring-1 ring-[#E2B46D] shadow-xl z-25 opacity-95" : ""}`}
+                            >
+                              <div className="flex items-start justify-between gap-1.5">
+                                <div className="min-w-0 flex-1">
+                                  <div
+                                    className={`font-editorial leading-tight text-[var(--text-ivory)] truncate ${
+                                      viewMode === "week" ? "text-[0.8rem]" : "text-[0.94rem]"
+                                    }`}
                                   >
-                                    <Play className="h-2.5 w-2.5 fill-current" />
-                                    {viewMode === "week" ? "" : "Focus"}
-                                  </button>
-                                  {item.kind === "manual" && (
+                                    {item.title}
+                                  </div>
+                                  <div className="font-ui tabular-nums text-[0.58rem] text-[var(--text-muted)] truncate">
+                                    {effStartLabel} · {effDuration}m
+                                    {item.kind === "recurring" && viewMode !== "week"
+                                      ? " · Recurring"
+                                      : ""}
+                                  </div>
+                                </div>
+
+                                {isExternal ? (
+                                  <span title="Read-only imported .ics event">
+                                    <Lock className="h-3 w-3 shrink-0 text-[#C5A059]/80" />
+                                  </span>
+                                ) : (
+                                  <div
+                                    className={`items-center gap-1 shrink-0 transition-opacity ${
+                                      viewMode === "week"
+                                        ? "hidden group-hover:flex"
+                                        : "flex opacity-80 group-hover:opacity-100"
+                                    }`}
+                                  >
                                     <button
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        void onDeleteBlock(item.sourceId);
+                                        onStartFocusBlock(item.title, effDuration);
                                       }}
-                                      aria-label={`Remove ${item.title}`}
-                                      className="cursor-pointer bg-transparent border-0 p-0.5 text-[var(--text-muted)] hover:text-[var(--danger-ember)]"
+                                      data-testid="calendar-start-focus-btn"
+                                      title="Start Focus Session"
+                                      className="cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.45)] bg-[rgba(226,180,109,0.16)] px-2 py-0.5 flex items-center gap-1 font-ui text-[0.54rem] uppercase tracking-[0.1em] text-[var(--text-ivory)] hover:bg-[rgba(226,180,109,0.28)]"
                                     >
-                                      <Trash2 className="h-3 w-3" />
+                                      <Play className="h-2.5 w-2.5 fill-current" />
+                                      {viewMode === "week" ? "" : "Focus"}
                                     </button>
-                                  )}
+                                    {item.kind === "manual" && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          void onDeleteBlock(item.sourceId);
+                                        }}
+                                        aria-label={`Remove ${item.title}`}
+                                        className="cursor-pointer bg-transparent border-0 p-0.5 text-[var(--text-muted)] hover:text-[var(--danger-ember)]"
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Bottom Resize Handle for App Events */}
+                              {!isExternal && (
+                                <div
+                                  onPointerDown={(e) => {
+                                    e.stopPropagation();
+                                    dragMetaRef.current = {
+                                      item,
+                                      mode: "resize",
+                                      startClientX: e.clientX,
+                                      startClientY: e.clientY,
+                                      origDate: item.date,
+                                      origStartMin: item.startLogicalMin,
+                                      origDurationMin: item.durationMinutes,
+                                      hasMoved: false,
+                                    };
+                                    setPointerTracking(true);
+                                  }}
+                                  title="Drag to resize duration"
+                                  className="absolute inset-x-3 bottom-0 h-2 cursor-ns-resize flex items-center justify-center"
+                                >
+                                  <span className="h-[2px] w-7 rounded-full bg-[rgba(226,180,109,0.45)] opacity-0 group-hover:opacity-100" />
                                 </div>
                               )}
                             </div>
-
-                            {/* Bottom Resize Handle for Focus Blocks */}
-                            {!isExternal && (
-                              <div
-                                onPointerDown={(e) => {
-                                  e.stopPropagation();
-                                  dragMetaRef.current = {
-                                    item,
-                                    mode: "resize",
-                                    startClientY: e.clientY,
-                                    origStartMin: item.startLogicalMin,
-                                    origDurationMin: item.durationMinutes,
-                                  };
-                                  setDragPreview({
-                                    itemId: item.id,
-                                    mode: "resize",
-                                    startMin: item.startLogicalMin,
-                                    durationMin: item.durationMinutes,
-                                  });
-                                }}
-                                title="Drag to resize duration"
-                                className="absolute inset-x-3 bottom-0 h-2 cursor-ns-resize flex items-center justify-center"
-                              >
-                                <span className="h-[2px] w-7 rounded-full bg-[rgba(143,184,163,0.35)] opacity-0 group-hover:opacity-100" />
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                  </div>
-                ))}
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </div>
@@ -711,14 +981,14 @@ export function CalendarMiniApp({
           {drawerOpen && (
             <aside
               data-testid="recurring-blocks-drawer"
-              className="w-[330px] shrink-0 smoked-glass rounded-[14px] border border-[#C5A059]/35 p-5 space-y-5 max-h-[72vh] overflow-y-auto"
+              className="w-[330px] shrink-0 rounded-[10px] border border-[#C5A059]/35 bg-[#101622] p-5 space-y-5 max-h-[68vh] overflow-y-auto"
             >
               <div className="flex items-center justify-between border-b border-[var(--glass-border)] pb-3">
                 <div>
                   <div className="font-ui text-[0.6rem] uppercase tracking-[0.2em] text-[#C5A059]">
                     Recurring Soft Blocks
                   </div>
-                  <div className="font-reading italic text-[0.86rem] text-[var(--text-muted)]">
+                  <div className="font-reading text-[0.86rem] text-[var(--text-muted)]">
                     Auto-yield when an .ics meeting overlaps
                   </div>
                 </div>
@@ -746,7 +1016,7 @@ export function CalendarMiniApp({
                       const found = goals.find((g) => g.id === gid);
                       if (found) setRecTitle(found.title);
                     }}
-                    className="mt-1 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--surface-inner)] px-2.5 py-1.5 font-ui text-[0.72rem] text-[var(--text-ivory)] focus:outline-none"
+                    className="mt-1 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-2.5 py-1.5 font-ui text-[0.72rem] text-[var(--text-ivory)] focus:outline-none"
                   >
                     <option value="">Custom Focus Label...</option>
                     {goals
@@ -762,8 +1032,8 @@ export function CalendarMiniApp({
                     value={recTitle}
                     onChange={(e) => setRecTitle(e.target.value)}
                     data-testid="recurring-block-title-input"
-                    placeholder="e.g. Read Book, Deep Work, Weekly Review..."
-                    className="mt-1.5 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--surface-inner)] px-3 py-1.5 font-reading text-[0.94rem] text-[var(--text-ivory)] placeholder:text-[var(--text-muted)]/60 focus:border-[var(--accent-luminous)] focus:outline-none"
+                    placeholder="e.g. Deep Work, Reading, Weekly Review..."
+                    className="mt-1.5 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-3 py-1.5 font-reading text-[0.94rem] text-[var(--text-ivory)] placeholder:text-[var(--text-muted)]/60 focus:border-[#E2B46D] focus:outline-none"
                   />
                 </div>
 
@@ -777,25 +1047,24 @@ export function CalendarMiniApp({
                       value={recStartTime}
                       onChange={(e) => setRecStartTime(e.target.value)}
                       data-testid="recurring-block-start-input"
-                      className="mt-1 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--surface-inner)] px-2.5 py-1.5 font-ui tabular-nums text-[0.74rem] text-[var(--text-ivory)]"
+                      className="mt-1 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-2.5 py-1.5 font-ui tabular-nums text-[0.74rem] text-[var(--text-ivory)]"
                     />
                   </label>
                   <label className="block">
                     <span className="font-ui text-[0.58rem] uppercase tracking-[0.16em] text-[var(--text-muted)]">
-                      Duration
+                      Duration (min)
                     </span>
-                    <select
+                    <input
+                      type="number"
+                      min={5}
+                      max={720}
                       value={recDuration}
-                      onChange={(e) => setRecDuration(Number(e.target.value))}
-                      data-testid="recurring-block-duration-select"
-                      className="mt-1 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--surface-inner)] px-2.5 py-1.5 font-ui tabular-nums text-[0.74rem] text-[var(--text-ivory)]"
-                    >
-                      {[30, 45, 60, 90, 120, 180].map((m) => (
-                        <option key={m} value={m}>
-                          {m} min
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(e) =>
+                        setRecDuration(Math.max(5, Math.min(720, Number(e.target.value) || 60)))
+                      }
+                      data-testid="recurring-block-duration-input"
+                      className="mt-1 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-2.5 py-1.5 font-ui tabular-nums text-[0.74rem] text-[var(--text-ivory)]"
+                    />
                   </label>
                 </div>
 
@@ -817,7 +1086,7 @@ export function CalendarMiniApp({
                         type="button"
                         onClick={() => setRecCadence(cad)}
                         data-testid={`recurring-cadence-${cad}`}
-                        className={`cursor-pointer rounded-full px-2.5 py-0.5 font-ui text-[0.58rem] uppercase tracking-[0.12em] border ${
+                        className={`cursor-pointer rounded-[3px] px-2.5 py-0.5 font-ui text-[0.58rem] uppercase tracking-[0.12em] border ${
                           recCadence === cad
                             ? "border-[#C5A059]/60 bg-[#C5A059]/16 text-[var(--text-ivory)]"
                             : "border-[var(--glass-border)] bg-transparent text-[var(--text-muted)]"
@@ -843,9 +1112,9 @@ export function CalendarMiniApp({
                                   : [...prev, idx].sort()
                               )
                             }
-                            className={`cursor-pointer rounded-md px-2 py-0.5 font-ui text-[0.58rem] border ${
+                            className={`cursor-pointer rounded-[3px] px-2 py-0.5 font-ui text-[0.58rem] border ${
                               on
-                                ? "border-[rgba(143,184,163,0.5)] bg-[rgba(143,184,163,0.18)] text-[var(--text-ivory)]"
+                                ? "border-[rgba(226,180,109,0.5)] bg-[rgba(226,180,109,0.18)] text-[var(--text-ivory)]"
                                 : "border-[var(--glass-border)] bg-transparent text-[var(--text-muted)]"
                             }`}
                           >
@@ -860,9 +1129,9 @@ export function CalendarMiniApp({
                 <button
                   type="submit"
                   data-testid="recurring-block-save-btn"
-                  className="w-full smoked-glass smoked-glass-hover cursor-pointer rounded-full py-2 border border-[rgba(143,184,163,0.4)] font-ui text-[0.66rem] uppercase tracking-[0.16em] text-[var(--text-ivory)] flex items-center justify-center gap-1.5"
+                  className="w-full cursor-pointer rounded-[3px] py-2 border border-[rgba(226,180,109,0.45)] bg-[rgba(226,180,109,0.14)] font-ui text-[0.66rem] uppercase tracking-[0.16em] text-[var(--text-ivory)] hover:bg-[rgba(226,180,109,0.24)] flex items-center justify-center gap-1.5"
                 >
-                  <Plus className="h-3.5 w-3.5 text-[var(--accent-luminous)]" />
+                  <Plus className="h-3.5 w-3.5 text-[#E2B46D]" />
                   Save Recurring Block
                 </button>
               </form>
@@ -873,7 +1142,7 @@ export function CalendarMiniApp({
                   <div
                     key={rb.id}
                     data-testid={`recurring-template-${rb.id}`}
-                    className="rounded-[9px] border border-[var(--glass-border)] bg-[var(--surface-inner)] px-3 py-2.5 flex items-center justify-between gap-2"
+                    className="rounded-[6px] border border-[var(--glass-border)] bg-[#0B0F17] px-3 py-2.5 flex items-center justify-between gap-2"
                   >
                     <div className="min-w-0">
                       <div className="font-editorial text-[0.98rem] text-[var(--text-ivory)] truncate">
@@ -895,7 +1164,7 @@ export function CalendarMiniApp({
                   </div>
                 ))}
                 {recurringBlocks.length === 0 && (
-                  <div className="py-4 text-center font-reading italic text-[0.88rem] text-[var(--text-muted)]">
+                  <div className="py-4 text-center font-reading text-[0.88rem] text-[var(--text-muted)]">
                     No recurring Focus Blocks defined yet.
                   </div>
                 )}
@@ -904,6 +1173,188 @@ export function CalendarMiniApp({
           )}
         </div>
       </div>
+
+      {/* ==================== CREATE / EDIT EVENT MODAL ==================== */}
+      {eventModal && (
+        <div
+          data-testid="calendar-event-modal"
+          onClick={() => setEventModal(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(5,8,14,0.78)] px-4"
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => void handleSaveEventModal(e)}
+            className="w-full max-w-[460px] rounded-[8px] border border-[rgba(226,180,109,0.34)] bg-[#0F1521] p-6 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-[rgba(226,180,109,0.14)] pb-3">
+              <div className="flex items-center gap-2">
+                <CalendarIcon className="h-4 w-4 text-[#E2B46D]" strokeWidth={1.6} />
+                <h3 className="font-editorial text-[1.28rem] font-normal text-[var(--text-ivory)]">
+                  {eventModal.mode === "create"
+                    ? "Create Event"
+                    : eventModal.mode === "edit_recurring"
+                    ? "Reschedule Occurrence"
+                    : "Edit Event"}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEventModal(null)}
+                aria-label="Close modal"
+                className="cursor-pointer bg-transparent border-0 p-1 text-[var(--text-muted)] hover:text-[var(--text-ivory)]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <label className="block">
+              <span className="font-ui text-[0.6rem] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                Event Title
+              </span>
+              <input
+                type="text"
+                autoFocus
+                required
+                value={eventModal.title}
+                onChange={(e) => setEventModal({ ...eventModal, title: e.target.value })}
+                data-testid="event-modal-title-input"
+                placeholder="e.g. Deep Work Session, Design Review..."
+                className="mt-1.5 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-3 py-2 font-reading text-[0.98rem] text-[var(--text-ivory)] placeholder:text-[var(--text-muted)]/55 focus:border-[#E2B46D] focus:outline-none"
+              />
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="font-ui text-[0.6rem] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                  Date
+                </span>
+                <input
+                  type="date"
+                  required
+                  value={eventModal.date}
+                  onChange={(e) => setEventModal({ ...eventModal, date: e.target.value })}
+                  data-testid="event-modal-date-input"
+                  className="mt-1.5 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-3 py-2 font-ui tabular-nums text-[0.78rem] text-[var(--text-ivory)] focus:border-[#E2B46D] focus:outline-none"
+                />
+              </label>
+
+              <label className="block">
+                <span className="font-ui text-[0.6rem] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                  Category
+                </span>
+                <input
+                  type="text"
+                  value={eventModal.category}
+                  onChange={(e) => setEventModal({ ...eventModal, category: e.target.value })}
+                  data-testid="event-modal-category-input"
+                  placeholder="Focus Block"
+                  className="mt-1.5 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-3 py-2 font-ui text-[0.78rem] text-[var(--text-ivory)] focus:border-[#E2B46D] focus:outline-none"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <label className="block">
+                <span className="font-ui text-[0.6rem] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                  Start Time
+                </span>
+                <input
+                  type="time"
+                  required
+                  value={eventModal.startTime}
+                  onChange={(e) => {
+                    const nextStart = e.target.value;
+                    setEventModal({
+                      ...eventModal,
+                      startTime: nextStart,
+                      endTime: addMinutesToHHMM(nextStart, eventModal.durationMinutes),
+                    });
+                  }}
+                  data-testid="event-modal-start-input"
+                  className="mt-1.5 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-2.5 py-2 font-ui tabular-nums text-[0.78rem] text-[var(--text-ivory)] focus:border-[#E2B46D] focus:outline-none"
+                />
+              </label>
+
+              <label className="block">
+                <span className="font-ui text-[0.6rem] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                  End Time
+                </span>
+                <input
+                  type="time"
+                  required
+                  value={eventModal.endTime}
+                  onChange={(e) => {
+                    const nextEnd = e.target.value;
+                    const nextDur = diffMinutesBetweenHHMM(eventModal.startTime, nextEnd);
+                    setEventModal({
+                      ...eventModal,
+                      endTime: nextEnd,
+                      durationMinutes: nextDur,
+                    });
+                  }}
+                  data-testid="event-modal-end-input"
+                  className="mt-1.5 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-2.5 py-2 font-ui tabular-nums text-[0.78rem] text-[var(--text-ivory)] focus:border-[#E2B46D] focus:outline-none"
+                />
+              </label>
+
+              <label className="block">
+                <span className="font-ui text-[0.6rem] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                  Duration (min)
+                </span>
+                <input
+                  type="number"
+                  min={5}
+                  max={720}
+                  value={eventModal.durationMinutes}
+                  onChange={(e) => {
+                    const nextDur = Math.max(5, Math.min(720, Number(e.target.value) || 5));
+                    setEventModal({
+                      ...eventModal,
+                      durationMinutes: nextDur,
+                      endTime: addMinutesToHHMM(eventModal.startTime, nextDur),
+                    });
+                  }}
+                  data-testid="event-modal-duration-input"
+                  className="mt-1.5 w-full rounded-[4px] border border-[var(--glass-border)] bg-[#0B0F17] px-2.5 py-2 font-ui tabular-nums text-[0.78rem] text-[var(--text-ivory)] focus:border-[#E2B46D] focus:outline-none"
+                />
+              </label>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t border-[rgba(226,180,109,0.14)] pt-4">
+              <div>
+                {eventModal.mode !== "create" && (
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteEventModal()}
+                    data-testid="event-modal-delete-btn"
+                    className="cursor-pointer rounded-[3px] border border-[rgba(207,114,97,0.4)] bg-[rgba(207,114,97,0.12)] px-3.5 py-1.5 flex items-center gap-1.5 font-ui text-[0.62rem] uppercase tracking-[0.14em] text-[#f0a599] hover:bg-[rgba(207,114,97,0.22)]"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {eventModal.mode === "edit_recurring" ? "Skip Day" : "Delete"}
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setEventModal(null)}
+                  className="cursor-pointer rounded-[3px] border border-[var(--glass-border)] bg-transparent px-4 py-1.5 font-ui text-[0.62rem] uppercase tracking-[0.14em] text-[var(--text-muted)] hover:text-[var(--text-ivory)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  data-testid="event-modal-save-btn"
+                  className="cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.58)] bg-[rgba(226,180,109,0.2)] px-4 py-1.5 font-ui text-[0.64rem] uppercase tracking-[0.16em] text-[var(--text-ivory)] hover:bg-[rgba(226,180,109,0.3)]"
+                >
+                  {eventModal.mode === "create" ? "Create Event" : "Save Changes"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
     </MiniAppShell>
   );
 }

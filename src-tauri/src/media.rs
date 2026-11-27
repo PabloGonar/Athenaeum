@@ -293,7 +293,22 @@ pub fn launch_apple_music_app() -> Result<String, String> {
         Ok("Opened Apple Music in browser".to_string())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        if Command::new("open")
+            .args(["-a", "Music"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return Ok("Launched Apple Music".to_string());
+        }
+        open_external_url_native("https://music.apple.com")?;
+        Ok("Opened Apple Music in browser".to_string())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         open_external_url_native("https://music.apple.com")
     }
@@ -343,7 +358,22 @@ pub fn launch_spotify_app() -> Result<String, String> {
         Ok("Opened Spotify in browser".to_string())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        if Command::new("open")
+            .args(["-a", "Spotify"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return Ok("Launched Spotify".to_string());
+        }
+        open_external_url_native("https://open.spotify.com")?;
+        Ok("Opened Spotify in browser".to_string())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         open_external_url_native("https://open.spotify.com")
     }
@@ -374,8 +404,20 @@ pub fn open_external_url_native(url: &str) -> Result<String, String> {
         Ok(format!("Launched {trimmed}"))
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        Ok(format!("Simulated external URL launch: {trimmed}"))
+        use std::process::Command;
+        Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| format!("Failed opening external URL: {e}"))?;
+        Ok(format!("Launched {trimmed}"))
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        use std::process::Command;
+        let _ = Command::new("xdg-open").arg(trimmed).spawn();
+        Ok(format!("Launched {trimmed}"))
     }
 }

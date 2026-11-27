@@ -1385,14 +1385,17 @@ function athenaeumDevBridges(): Plugin {
               kelvin?: number;
               brightnessPct?: number;
               entityId?: string;
+              sceneEntityId?: string;
               transition?: number;
             };
           };
           const baseUrl = String(raw.baseUrl || "").trim().replace(/\/+$/, "");
           const token = String(raw.token || "").trim();
           const cmd = raw.command || {};
-          const entityId = String(cmd.entityId || "").trim();
-          const safeBrightness = Math.max(1, Math.min(100, Math.round(Number(cmd.brightnessPct ?? 45))));
+          const sceneEntityId = String(cmd.sceneEntityId || "").trim();
+          const isScene = Boolean(sceneEntityId) || cmd.mode === "scene";
+          const entityId = isScene ? sceneEntityId : String(cmd.entityId || "").trim();
+          const safeBrightness = Math.max(0, Math.min(100, Math.round(Number(cmd.brightnessPct ?? 45))));
           if (!baseUrl || !entityId) {
             res.end(
               JSON.stringify({
@@ -1400,27 +1403,32 @@ function athenaeumDevBridges(): Plugin {
                 endpoint: "",
                 entityId,
                 appliedBrightnessPct: safeBrightness,
-                message: "Home Assistant isn't connected yet. Set it up in Settings to control your lights.",
+                message: isScene && !sceneEntityId
+                  ? "Enter a Scene Entity ID (e.g. scene.deep_focus) first."
+                  : "Home Assistant isn't connected yet. Set it up in Settings to control your lights.",
               })
             );
             return;
           }
           const brightness255 = Math.max(0, Math.min(255, Math.round(safeBrightness * 2.55)));
-          const endpoint = `${baseUrl}/api/services/light/turn_on`;
-          const payload: Record<string, unknown> =
-            cmd.mode === "kelvin"
-              ? {
-                  entity_id: entityId,
-                  color_temp_kelvin: Math.max(2000, Math.min(6500, Math.round(Number(cmd.kelvin ?? 2700)))),
-                  brightness: brightness255,
-                  transition: Number(cmd.transition ?? 1.2),
-                }
-              : {
-                  entity_id: entityId,
-                  rgb_color: Array.isArray(cmd.rgbColor) && cmd.rgbColor.length === 3 ? cmd.rgbColor : [128, 0, 255],
-                  brightness: brightness255,
-                  transition: Number(cmd.transition ?? 1.2),
-                };
+          const endpoint = isScene
+            ? `${baseUrl}/api/services/scene/turn_on`
+            : `${baseUrl}/api/services/light/turn_on`;
+          const payload: Record<string, unknown> = isScene
+            ? { entity_id: sceneEntityId }
+            : cmd.mode === "kelvin"
+            ? {
+                entity_id: entityId,
+                color_temp_kelvin: Math.max(2000, Math.min(6500, Math.round(Number(cmd.kelvin ?? 2700)))),
+                brightness: brightness255,
+                transition: Number(cmd.transition ?? 1.2),
+              }
+            : {
+                entity_id: entityId,
+                rgb_color: Array.isArray(cmd.rgbColor) && cmd.rgbColor.length === 3 ? cmd.rgbColor : [128, 0, 255],
+                brightness: brightness255,
+                transition: Number(cmd.transition ?? 1.2),
+              };
 
           try {
             const headers: Record<string, string> = { "Content-Type": "application/json" };

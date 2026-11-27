@@ -94,6 +94,7 @@ export const DEFAULT_HA_FOCUS_PRESET: HaLightPreset = {
   rgbColor: [128, 0, 255],
   kelvin: 2700,
   brightnessPct: 45,
+  sceneEntityId: "",
 };
 
 export const DEFAULT_HA_NON_FOCUS_PRESET: HaLightPreset = {
@@ -102,6 +103,7 @@ export const DEFAULT_HA_NON_FOCUS_PRESET: HaLightPreset = {
   rgbColor: [255, 200, 140],
   kelvin: 2700,
   brightnessPct: 45,
+  sceneEntityId: "",
 };
 
 export const DEFAULT_HA_READING_PRESET: HaLightPreset = {
@@ -110,6 +112,7 @@ export const DEFAULT_HA_READING_PRESET: HaLightPreset = {
   rgbColor: [255, 198, 132],
   kelvin: 2700,
   brightnessPct: 45,
+  sceneEntityId: "",
 };
 
 function generateBrowserToken32Bytes(): string {
@@ -704,9 +707,12 @@ export const storageService = {
       if (!cfg.haFocusPreset) cfg.haFocusPreset = { ...DEFAULT_HA_FOCUS_PRESET };
       if (!cfg.haNonFocusPreset) cfg.haNonFocusPreset = { ...DEFAULT_HA_NON_FOCUS_PRESET };
       if (!cfg.haReadingPreset) cfg.haReadingPreset = { ...DEFAULT_HA_READING_PRESET };
-      cfg.haFocusPreset.brightnessPct = Math.max(1, Math.min(100, cfg.haFocusPreset.brightnessPct || 45));
-      cfg.haNonFocusPreset.brightnessPct = Math.max(1, Math.min(100, cfg.haNonFocusPreset.brightnessPct || 45));
-      cfg.haReadingPreset.brightnessPct = Math.max(1, Math.min(100, cfg.haReadingPreset.brightnessPct || 45));
+      cfg.haFocusPreset.brightnessPct = Math.max(0, Math.min(100, typeof cfg.haFocusPreset.brightnessPct === "number" ? cfg.haFocusPreset.brightnessPct : 45));
+      cfg.haNonFocusPreset.brightnessPct = Math.max(0, Math.min(100, typeof cfg.haNonFocusPreset.brightnessPct === "number" ? cfg.haNonFocusPreset.brightnessPct : 45));
+      cfg.haReadingPreset.brightnessPct = Math.max(0, Math.min(100, typeof cfg.haReadingPreset.brightnessPct === "number" ? cfg.haReadingPreset.brightnessPct : 45));
+      if (typeof cfg.haFocusPreset.sceneEntityId !== "string") cfg.haFocusPreset.sceneEntityId = "";
+      if (typeof cfg.haNonFocusPreset.sceneEntityId !== "string") cfg.haNonFocusPreset.sceneEntityId = "";
+      if (typeof cfg.haReadingPreset.sceneEntityId !== "string") cfg.haReadingPreset.sceneEntityId = "";
       if (typeof cfg.haAutoLight !== "boolean") cfg.haAutoLight = false;
       if (typeof cfg.n8nTriggerWeeklySynthesis !== "boolean") cfg.n8nTriggerWeeklySynthesis = true;
       if (typeof cfg.n8nTriggerDailyDebrief !== "boolean") cfg.n8nTriggerDailyDebrief = true;
@@ -747,25 +753,28 @@ export const storageService = {
       ...DEFAULT_HA_FOCUS_PRESET,
       ...(stored.haFocusPreset ?? {}),
       brightnessPct: Math.max(
-        1,
-        Math.min(100, stored.haFocusPreset?.brightnessPct ?? DEFAULT_HA_FOCUS_PRESET.brightnessPct)
+        0,
+        Math.min(100, typeof stored.haFocusPreset?.brightnessPct === "number" ? stored.haFocusPreset.brightnessPct : DEFAULT_HA_FOCUS_PRESET.brightnessPct)
       ),
+      sceneEntityId: typeof stored.haFocusPreset?.sceneEntityId === "string" ? stored.haFocusPreset.sceneEntityId : "",
     };
     const mergedNonFocusPreset: HaLightPreset = {
       ...DEFAULT_HA_NON_FOCUS_PRESET,
       ...(stored.haNonFocusPreset ?? {}),
       brightnessPct: Math.max(
-        1,
-        Math.min(100, stored.haNonFocusPreset?.brightnessPct ?? DEFAULT_HA_NON_FOCUS_PRESET.brightnessPct)
+        0,
+        Math.min(100, typeof stored.haNonFocusPreset?.brightnessPct === "number" ? stored.haNonFocusPreset.brightnessPct : DEFAULT_HA_NON_FOCUS_PRESET.brightnessPct)
       ),
+      sceneEntityId: typeof stored.haNonFocusPreset?.sceneEntityId === "string" ? stored.haNonFocusPreset.sceneEntityId : "",
     };
     const mergedReadingPreset: HaLightPreset = {
       ...DEFAULT_HA_READING_PRESET,
       ...(stored.haReadingPreset ?? {}),
       brightnessPct: Math.max(
-        1,
-        Math.min(100, stored.haReadingPreset?.brightnessPct ?? DEFAULT_HA_READING_PRESET.brightnessPct)
+        0,
+        Math.min(100, typeof stored.haReadingPreset?.brightnessPct === "number" ? stored.haReadingPreset.brightnessPct : DEFAULT_HA_READING_PRESET.brightnessPct)
       ),
+      sceneEntityId: typeof stored.haReadingPreset?.sceneEntityId === "string" ? stored.haReadingPreset.sceneEntityId : "",
     };
     const storedUrls = Array.isArray(stored.calendarIcsUrls) ? stored.calendarIcsUrls : [];
     const storedFeeds: CalendarFeedConfig[] =
@@ -2693,9 +2702,29 @@ export const storageService = {
     if (isTauriRuntime()) {
       return invoke<string>("trigger_reading_light_webhook", { enabled });
     }
+    const baseUrl = (config.haBaseUrl || "").trim();
+    if (baseUrl) {
+      const preset = enabled ? config.haReadingPreset : config.haNonFocusPreset;
+      const sceneId = (preset?.sceneEntityId || "").trim();
+      const entityId = (config.haReadingLightEntity || config.haEntityId || "").trim();
+      if (sceneId || entityId) {
+        const res = await this.setHaLightState(
+          {
+            mode: sceneId ? "scene" : preset.mode,
+            rgbColor: preset.rgbColor,
+            kelvin: preset.kelvin,
+            brightnessPct: preset.brightnessPct,
+            entityId,
+            sceneEntityId: sceneId || undefined,
+          },
+          config
+        );
+        return res.message;
+      }
+    }
     const url = (config.haReadingWebhookUrl || config.homeAssistantWebhookUrl || "").trim();
     if (!url) {
-      return `Reading light ${enabled ? "on" : "off"} (configure HA webhook in Settings)`;
+      return `Reading light ${enabled ? "on" : "off"} (configure Home Assistant in Settings)`;
     }
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -2710,8 +2739,8 @@ export const storageService = {
           event: "reading_light",
           state: enabled ? "on" : "off",
           entity_id: config.haReadingLightEntity || config.haEntityId || "",
-          color_temp_kelvin: 2700,
-          brightness_pct: enabled ? 45 : 0,
+          color_temp_kelvin: config.haReadingPreset?.kelvin ?? 2700,
+          brightness_pct: enabled ? (config.haReadingPreset?.brightnessPct ?? 45) : 0,
         }),
       });
       return `Reading light ${enabled ? "on" : "off"} (HTTP ${res.status})`;
@@ -2826,11 +2855,14 @@ export const storageService = {
     command: HaLightCommand,
     config: AthenaeumConfig
   ): Promise<HaLightResult> {
-    const safeBrightness = Math.max(1, Math.min(100, Math.round(command.brightnessPct || 45)));
+    const rawPct = typeof command.brightnessPct === "number" ? command.brightnessPct : 45;
+    const safeBrightness = Math.max(0, Math.min(100, Math.round(rawPct)));
+    const sceneId = command.sceneEntityId?.trim() || "";
     const safeCmd: HaLightCommand = {
       ...command,
       brightnessPct: safeBrightness,
       entityId: command.entityId?.trim() || config.haEntityId?.trim() || "",
+      sceneEntityId: sceneId || undefined,
     };
 
     if (isTauriRuntime()) {
@@ -2839,16 +2871,21 @@ export const storageService = {
 
     const baseUrl = (config.haBaseUrl || "").trim().replace(/\/+$/, "");
     const token = (config.haToken || config.homeAssistantToken || "").trim();
-    if (!baseUrl || !safeCmd.entityId) {
+    const isScene = Boolean(sceneId) || safeCmd.mode === "scene";
+    if (!baseUrl || (isScene ? !sceneId : !safeCmd.entityId)) {
       return {
         ok: false,
         endpoint: "",
-        entityId: safeCmd.entityId ?? "",
+        entityId: isScene ? sceneId : (safeCmd.entityId ?? ""),
         appliedBrightnessPct: safeBrightness,
-        message: "Home Assistant isn't connected yet. Set it up in Settings to control your lights.",
+        message: isScene && !sceneId
+          ? "Enter a Scene Entity ID (e.g. scene.deep_focus) first."
+          : "Home Assistant isn't connected yet. Set it up in Settings to control your lights.",
       };
     }
-    const endpoint = `${baseUrl}/api/services/light/turn_on`;
+    const endpoint = isScene
+      ? `${baseUrl}/api/services/scene/turn_on`
+      : `${baseUrl}/api/services/light/turn_on`;
 
     try {
       const res = await fetch("/__dev/ha-light", {
@@ -2870,10 +2907,28 @@ export const storageService = {
     return {
       ok: false,
       endpoint,
-      entityId: safeCmd.entityId ?? "",
+      entityId: isScene ? sceneId : (safeCmd.entityId ?? ""),
       appliedBrightnessPct: safeBrightness,
       message: "Home Assistant isn't connected yet. Set it up in Settings to control your lights.",
     };
+  },
+
+  async triggerHaScene(
+    sceneEntityId: string,
+    config: AthenaeumConfig
+  ): Promise<HaLightResult> {
+    const clean = sceneEntityId.trim();
+    if (isTauriRuntime()) {
+      return invoke<HaLightResult>("trigger_ha_scene", { sceneEntityId: clean });
+    }
+    return this.setHaLightState(
+      {
+        mode: "scene",
+        brightnessPct: 100,
+        sceneEntityId: clean,
+      },
+      config
+    );
   },
 
   async openExternalUrl(url: string): Promise<string> {

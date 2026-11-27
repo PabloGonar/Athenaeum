@@ -191,17 +191,38 @@ export function SettingsMiniApp({
     try {
       await onSaveConfig(draft);
       const preset = draft.haFocusPreset;
+      const sceneId = preset.sceneEntityId?.trim() || "";
       const msg = await onTestLightPing(
         {
-          mode: preset.mode,
+          mode: sceneId ? "scene" : preset.mode,
           rgbColor: preset.rgbColor,
           kelvin: preset.kelvin,
-          brightnessPct: Math.min(100, preset.brightnessPct),
+          brightnessPct: Math.max(0, Math.min(100, preset.brightnessPct)),
           entityId: draft.haEntityId || "",
+          sceneEntityId: sceneId || undefined,
         },
         "Test Ping"
       );
       setHaPingStatus(msg);
+    } catch (err) {
+      setHaPingStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHaPinging(false);
+    }
+  };
+
+  const handleTestScene = async (sceneEntityId: string, label: string) => {
+    const clean = sceneEntityId.trim();
+    if (!clean) {
+      setHaPingStatus(`${label}: Enter a Scene Entity ID (e.g. scene.deep_focus) first.`);
+      return;
+    }
+    setHaPinging(true);
+    setHaPingStatus(null);
+    try {
+      await onSaveConfig(draft);
+      const res = await storageService.triggerHaScene(clean, draft);
+      setHaPingStatus(`${label}: ${res.message}`);
     } catch (err) {
       setHaPingStatus(err instanceof Error ? err.message : String(err));
     } finally {
@@ -339,6 +360,7 @@ export function SettingsMiniApp({
   return (
     <MiniAppShell
       title="Settings"
+      opaque
       onClose={onClose}
       rightSlot={
         <div className="flex items-center gap-2.5">
@@ -599,7 +621,7 @@ export function SettingsMiniApp({
                     className="h-4 w-4 accent-[#E2B46D] cursor-pointer"
                   />
                   <span className="font-editorial text-[1.02rem] text-[var(--text-ivory)]">
-                    Launch on Windows Startup
+                    Launch on Startup
                   </span>
                 </label>
               </div>
@@ -871,9 +893,9 @@ export function SettingsMiniApp({
                 </label>
               </div>
 
-              {/* Three Lighting Presets: Focus, Non-Focus, Reading */}
+              {/* Three Lighting Presets: Focus, Non-Focus, Reading (Full 0-100% Brightness + Optional HA Scenes) */}
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                <div className="rounded-[6px] border border-[var(--glass-border)] bg-[var(--surface-inner)] p-4 space-y-2.5">
+                <div className="rounded-[6px] border border-[var(--glass-border)] bg-[var(--surface-inner)] p-4 space-y-3">
                   <div className="font-ui text-[0.6rem] uppercase tracking-[0.18em] text-[var(--accent-luminous)]">
                     Focus Preset ({draft.haFocusPreset.name})
                   </div>
@@ -903,24 +925,59 @@ export function SettingsMiniApp({
                     </span>
                     <input
                       type="range"
-                      min={1}
+                      min={0}
                       max={100}
-                      value={Math.min(100, draft.haFocusPreset.brightnessPct)}
+                      value={Math.max(0, Math.min(100, draft.haFocusPreset.brightnessPct))}
+                      data-testid="ha-focus-brightness-slider"
                       onChange={(e) =>
                         setDraft({
                           ...draft,
                           haFocusPreset: {
                             ...draft.haFocusPreset,
-                            brightnessPct: Math.min(100, Number(e.target.value)),
+                            brightnessPct: Math.max(0, Math.min(100, Number(e.target.value))),
                           },
                         })
                       }
                       className="mt-1 h-[3px] w-full cursor-pointer accent-[#E2B46D]"
                     />
                   </label>
+                  <div className="pt-2 border-t border-[rgba(226,180,109,0.1)] space-y-1.5">
+                    <span className="font-ui text-[0.56rem] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                      Scene Entity ID (Optional)
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={draft.haFocusPreset.sceneEntityId ?? ""}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            haFocusPreset: {
+                              ...draft.haFocusPreset,
+                              sceneEntityId: e.target.value,
+                            },
+                          })
+                        }
+                        data-testid="ha-focus-scene-input"
+                        placeholder="scene.deep_focus"
+                        className="flex-1 min-w-0 rounded-[4px] border border-[var(--glass-border)] bg-[rgba(10,14,22,0.75)] px-2.5 py-1.5 font-ui text-[0.74rem] text-[var(--text-ivory)] placeholder:text-[var(--text-muted)]/55 focus:border-[#E2B46D] focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={haPinging}
+                        onClick={() =>
+                          void handleTestScene(draft.haFocusPreset.sceneEntityId ?? "", "Focus Scene")
+                        }
+                        data-testid="ha-focus-test-scene-btn"
+                        className="shrink-0 cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.38)] bg-[rgba(226,180,109,0.1)] px-2.5 py-1.5 font-ui text-[0.56rem] uppercase tracking-[0.12em] text-[#E2B46D] hover:bg-[rgba(226,180,109,0.2)] disabled:opacity-45"
+                      >
+                        Test Scene
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="rounded-[6px] border border-[var(--glass-border)] bg-[var(--surface-inner)] p-4 space-y-2.5">
+                <div className="rounded-[6px] border border-[var(--glass-border)] bg-[var(--surface-inner)] p-4 space-y-3">
                   <div className="font-ui text-[0.6rem] uppercase tracking-[0.18em] text-[#E2B46D]">
                     Non-Focus Preset ({draft.haNonFocusPreset.name})
                   </div>
@@ -953,24 +1010,59 @@ export function SettingsMiniApp({
                     </span>
                     <input
                       type="range"
-                      min={1}
+                      min={0}
                       max={100}
-                      value={Math.min(100, draft.haNonFocusPreset.brightnessPct)}
+                      value={Math.max(0, Math.min(100, draft.haNonFocusPreset.brightnessPct))}
+                      data-testid="ha-nonfocus-brightness-slider"
                       onChange={(e) =>
                         setDraft({
                           ...draft,
                           haNonFocusPreset: {
                             ...draft.haNonFocusPreset,
-                            brightnessPct: Math.min(100, Number(e.target.value)),
+                            brightnessPct: Math.max(0, Math.min(100, Number(e.target.value))),
                           },
                         })
                       }
                       className="mt-1 h-[3px] w-full cursor-pointer accent-[#E2B46D]"
                     />
                   </label>
+                  <div className="pt-2 border-t border-[rgba(226,180,109,0.1)] space-y-1.5">
+                    <span className="font-ui text-[0.56rem] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                      Scene Entity ID (Optional)
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={draft.haNonFocusPreset.sceneEntityId ?? ""}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            haNonFocusPreset: {
+                              ...draft.haNonFocusPreset,
+                              sceneEntityId: e.target.value,
+                            },
+                          })
+                        }
+                        data-testid="ha-nonfocus-scene-input"
+                        placeholder="scene.evening_relax"
+                        className="flex-1 min-w-0 rounded-[4px] border border-[var(--glass-border)] bg-[rgba(10,14,22,0.75)] px-2.5 py-1.5 font-ui text-[0.74rem] text-[var(--text-ivory)] placeholder:text-[var(--text-muted)]/55 focus:border-[#E2B46D] focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={haPinging}
+                        onClick={() =>
+                          void handleTestScene(draft.haNonFocusPreset.sceneEntityId ?? "", "Non-Focus Scene")
+                        }
+                        data-testid="ha-nonfocus-test-scene-btn"
+                        className="shrink-0 cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.38)] bg-[rgba(226,180,109,0.1)] px-2.5 py-1.5 font-ui text-[0.56rem] uppercase tracking-[0.12em] text-[#E2B46D] hover:bg-[rgba(226,180,109,0.2)] disabled:opacity-45"
+                      >
+                        Test Scene
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="rounded-[6px] border border-[var(--glass-border)] bg-[var(--surface-inner)] p-4 space-y-2.5">
+                <div className="rounded-[6px] border border-[var(--glass-border)] bg-[var(--surface-inner)] p-4 space-y-3">
                   <div className="font-ui text-[0.6rem] uppercase tracking-[0.18em] text-[var(--accent-luminous)]">
                     Reading Light Preset ({draft.haReadingPreset.name})
                   </div>
@@ -1003,21 +1095,56 @@ export function SettingsMiniApp({
                     </span>
                     <input
                       type="range"
-                      min={1}
+                      min={0}
                       max={100}
-                      value={Math.min(100, draft.haReadingPreset.brightnessPct)}
+                      value={Math.max(0, Math.min(100, draft.haReadingPreset.brightnessPct))}
+                      data-testid="ha-reading-brightness-slider"
                       onChange={(e) =>
                         setDraft({
                           ...draft,
                           haReadingPreset: {
                             ...draft.haReadingPreset,
-                            brightnessPct: Math.min(100, Number(e.target.value)),
+                            brightnessPct: Math.max(0, Math.min(100, Number(e.target.value))),
                           },
                         })
                       }
                       className="mt-1 h-[3px] w-full cursor-pointer accent-[#E2B46D]"
                     />
                   </label>
+                  <div className="pt-2 border-t border-[rgba(226,180,109,0.1)] space-y-1.5">
+                    <span className="font-ui text-[0.56rem] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                      Scene Entity ID (Optional)
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={draft.haReadingPreset.sceneEntityId ?? ""}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            haReadingPreset: {
+                              ...draft.haReadingPreset,
+                              sceneEntityId: e.target.value,
+                            },
+                          })
+                        }
+                        data-testid="ha-reading-scene-input"
+                        placeholder="scene.evening_reading"
+                        className="flex-1 min-w-0 rounded-[4px] border border-[var(--glass-border)] bg-[rgba(10,14,22,0.75)] px-2.5 py-1.5 font-ui text-[0.74rem] text-[var(--text-ivory)] placeholder:text-[var(--text-muted)]/55 focus:border-[#E2B46D] focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={haPinging}
+                        onClick={() =>
+                          void handleTestScene(draft.haReadingPreset.sceneEntityId ?? "", "Reading Scene")
+                        }
+                        data-testid="ha-reading-test-scene-btn"
+                        className="shrink-0 cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.38)] bg-[rgba(226,180,109,0.1)] px-2.5 py-1.5 font-ui text-[0.56rem] uppercase tracking-[0.12em] text-[#E2B46D] hover:bg-[rgba(226,180,109,0.2)] disabled:opacity-45"
+                      >
+                        Test Scene
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 

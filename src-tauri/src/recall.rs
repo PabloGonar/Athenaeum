@@ -780,8 +780,19 @@ pub fn open_vault_file_in_os(file_path: &str) -> Result<String, String> {
             .map_err(|e| format!("Failed opening Vault file: {e}"))?;
         Ok(format!("Opened {trimmed}"))
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
+        use std::process::Command;
+        Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| format!("Failed opening Vault file: {e}"))?;
+        Ok(format!("Opened {trimmed}"))
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        use std::process::Command;
+        let _ = Command::new("xdg-open").arg(trimmed).spawn();
         Ok(format!("Opened {trimmed}"))
     }
 }

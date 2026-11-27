@@ -414,13 +414,20 @@ export function LibraryMiniApp({
           book.epubCfi
         );
         await trackLogicalPageRead(book.id, startPage);
+        if (config.haAutoLight && config.haBaseUrl.trim()) {
+          setReadingLightOn(true);
+          void storageService
+            .triggerReadingLightWebhook(true, config)
+            .then((msg) => setReadingLightStatus(msg))
+            .catch(() => {});
+        }
       } catch (err) {
         setBookLoadError(err instanceof Error ? err.message : String(err));
       } finally {
         setLoadingBook(false);
       }
     },
-    [dayRolloverHour, persistProgress, trackLogicalPageRead]
+    [config, dayRolloverHour, persistProgress, trackLogicalPageRead]
   );
 
   const closeReader = useCallback(() => {
@@ -432,11 +439,15 @@ export function LibraryMiniApp({
         scrollOffsetRef.current,
         epubCfiRef.current
       );
+      if (config.haAutoLight && config.haBaseUrl.trim()) {
+        setReadingLightOn(false);
+        void storageService.triggerReadingLightWebhook(false, config).catch(() => {});
+      }
     }
     setActiveBook(null);
     setBookBytes(null);
     setBookLoadError(null);
-  }, [activeBook, currentPage, totalPages, persistProgress]);
+  }, [activeBook, config, currentPage, totalPages, persistProgress]);
 
   // Keyboard navigation in Reader (Ctrl+F toggles search; Esc closes search first, then returns to shelf)
   useEffect(() => {
@@ -793,7 +804,7 @@ export function LibraryMiniApp({
         exit={{ opacity: 0 }}
         transition={{ duration: 0.28 }}
         data-testid="library-reader-view"
-        className="theme-chamber fixed inset-0 z-50 isolate flex h-screen w-screen flex-col overflow-hidden bg-transparent text-[var(--text-ivory)]"
+        className="theme-chamber absolute inset-0 z-50 isolate flex h-full w-full flex-col overflow-hidden bg-transparent text-[var(--text-ivory)]"
       >
         <RoomBackdrop roomId="library" />
 

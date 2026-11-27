@@ -269,6 +269,7 @@ pub fn run() {
             commands::delete_toc_tree,
             commands::trigger_ha_webhook,
             commands::set_ha_light_state,
+            commands::trigger_ha_scene,
             commands::open_external_url,
             commands::media_control,
             commands::get_media_state,

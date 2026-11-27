@@ -65,7 +65,7 @@ export function SecretChamber({
       id="secret-chamber"
       data-testid="secret-chamber"
       data-zoomed-room={activeRoomId ?? "none"}
-      className="relative h-screen w-screen shrink-0 overflow-hidden bg-[#060b0f]"
+      className="relative h-1/2 w-full shrink-0 overflow-hidden bg-[#060b0f]"
     >
       {/* Exact 16:9 aspect-preserving cover stage locked to 100vw x 100vh with zero overflow below */}
       <motion.div

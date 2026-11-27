@@ -71,6 +71,21 @@ Compiled binaries and installers are output to `src-tauri/target/release/bundle/
 
 ---
 
+## macOS Installation
+
+Pre-built macOS `.dmg` installers (Apple Silicon `aarch64` and Intel `x86_64`) are published automatically via GitHub Releases alongside the Windows installer.
+
+1. Download the `.dmg` matching your Mac from the **Releases** page and drag **Athenaeum.app** into `/Applications`.
+2. Because the community macOS build is unsigned, clear the Gatekeeper quarantine attribute once before first launch:
+
+```bash
+xattr -cr /Applications/Athenaeum.app
+```
+
+3. Open **Athenaeum** normally from Applications or Spotlight.
+
+---
+
 ## Privacy & Local Data
 
 All user databases (`*.db`), configuration files (`config.json`), and local environment files (`.env*`) are excluded from version control via `.gitignore` and remain strictly on your local machine.

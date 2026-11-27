@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Calendar as CalendarIcon,
@@ -62,6 +62,16 @@ function getCurrentWeekDays(now: Date) {
   });
 }
 
+function formatIsoDayLabel(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  return dt.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export function ScheduleReadout({
   blocks,
   recurringBlocks,
@@ -94,12 +104,39 @@ export function ScheduleReadout({
 
   const logicalDateObj = getLogicalDateObject(nowTick, dayRolloverHour);
   const todayIso = getLogicalDate(nowTick, dayRolloverHour);
-  const todayLabel = logicalDateObj.toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  });
+  const [selectedDateIso, setSelectedDateIso] = useState<string>(todayIso);
+  const prevTodayRef = useRef<string>(todayIso);
+
+  useEffect(() => {
+    if (prevTodayRef.current !== todayIso) {
+      if (selectedDateIso === prevTodayRef.current) {
+        setSelectedDateIso(todayIso);
+      }
+      prevTodayRef.current = todayIso;
+    }
+  }, [todayIso, selectedDateIso]);
+
+  const isViewingToday = selectedDateIso === todayIso;
+  const headerDateLabel = formatIsoDayLabel(selectedDateIso);
   const weekDays = useMemo(() => getCurrentWeekDays(logicalDateObj), [logicalDateObj]);
+
+  // Indicator dots for days in the current week that have scheduled events/blocks
+  const dayItemCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const d of weekDays) {
+      const res = resolveDaySchedule(
+        d.iso,
+        blocks,
+        recurringBlocks,
+        overrides,
+        externalEvents,
+        dayRolloverHour,
+        d.iso === todayIso
+      );
+      counts[d.iso] = res.items.length;
+    }
+    return counts;
+  }, [weekDays, blocks, recurringBlocks, overrides, externalEvents, dayRolloverHour, todayIso]);
 
   const nowLogicalMin = useMemo(() => {
     const hhmm = `${String(nowTick.getHours()).padStart(2, "0")}:${String(
@@ -108,31 +145,33 @@ export function ScheduleReadout({
     return toLogicalMinutes(hhmm, dayRolloverHour);
   }, [nowTick, dayRolloverHour]);
 
-  const { activeItem, activeProgressPct, nextThreeItems, displaced } = useMemo(() => {
+  const { activeItem, activeProgressPct, nextThreeItems, selectedDayItems, displaced } = useMemo(() => {
     const resolved = resolveDaySchedule(
-      todayIso,
+      selectedDateIso,
       blocks,
       recurringBlocks,
       overrides,
       externalEvents,
       dayRolloverHour,
-      true
+      isViewingToday
     );
 
     let current: ResolvedScheduleItem | null = null;
     const upcoming: ResolvedScheduleItem[] = [];
 
-    for (const item of resolved.items) {
-      if (item.allDay) {
-        upcoming.push(item);
-      } else if (
-        nowLogicalMin >= item.startLogicalMin &&
-        nowLogicalMin < item.endLogicalMin &&
-        !current
-      ) {
-        current = item;
-      } else if (item.startLogicalMin >= nowLogicalMin) {
-        upcoming.push(item);
+    if (isViewingToday) {
+      for (const item of resolved.items) {
+        if (item.allDay) {
+          upcoming.push(item);
+        } else if (
+          nowLogicalMin >= item.startLogicalMin &&
+          nowLogicalMin < item.endLogicalMin &&
+          !current
+        ) {
+          current = item;
+        } else if (item.startLogicalMin >= nowLogicalMin) {
+          upcoming.push(item);
+        }
       }
     }
 
@@ -154,9 +193,19 @@ export function ScheduleReadout({
       activeItem: current,
       activeProgressPct: pct,
       nextThreeItems: upcoming.slice(0, 3),
+      selectedDayItems: resolved.items,
       displaced: resolved.displaced,
     };
-  }, [blocks, recurringBlocks, overrides, externalEvents, todayIso, dayRolloverHour, nowLogicalMin]);
+  }, [
+    blocks,
+    recurringBlocks,
+    overrides,
+    externalEvents,
+    selectedDateIso,
+    isViewingToday,
+    dayRolloverHour,
+    nowLogicalMin,
+  ]);
 
   const handleQuickAdd = (e: React.FormEvent) => {
     e.preventDefault();
@@ -168,7 +217,7 @@ export function ScheduleReadout({
       startTime,
       endTime,
       category: "Focus Block",
-      date: todayIso,
+      date: selectedDateIso,
     });
     setTitle("");
     setAdding(false);
@@ -179,17 +228,29 @@ export function ScheduleReadout({
       data-testid="schedule-readout"
       className="relative smoked-glass w-[324px] rounded-[6px] p-4 text-left select-none"
     >
-      {/* Header: Clickable Date -> Full Calendar + Optional ICS Sync */}
+      {/* Header: Clickable Date -> Full Calendar + Optional Today Reset + Optional ICS Sync */}
       <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={onOpenCalendar}
-          className="cursor-pointer bg-transparent border-0 p-0 text-left font-editorial text-[1.12rem] tracking-[0.03em] text-[var(--text-ivory)] hover:text-[#f2dfb3] transition-colors"
-          title="Open Full Calendar"
-        >
-          {todayLabel}
-        </button>
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={onOpenCalendar}
+            className="cursor-pointer bg-transparent border-0 p-0 text-left font-editorial text-[1.12rem] tracking-[0.03em] text-[var(--text-ivory)] hover:text-[#f2dfb3] transition-colors truncate"
+            title="Open Full Calendar"
+          >
+            {headerDateLabel}
+          </button>
+          {!isViewingToday && (
+            <button
+              type="button"
+              onClick={() => setSelectedDateIso(todayIso)}
+              data-testid="schedule-reset-today-btn"
+              className="cursor-pointer shrink-0 rounded-[3px] border border-[rgba(226,180,109,0.42)] bg-[rgba(226,180,109,0.14)] px-1.5 py-0.5 font-ui text-[0.54rem] uppercase tracking-[0.14em] text-[#E2B46D] hover:bg-[rgba(226,180,109,0.24)] transition-colors"
+            >
+              Today
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-2.5 shrink-0">
           {hasIcsFeeds && onSyncCalendars && (
             <button
               type="button"
@@ -221,164 +282,240 @@ export function ScheduleReadout({
         </div>
       </div>
 
-      {/* Mini-Week Strip */}
+      {/* Clickable 7-Day Mini-Week Strip */}
       <div
         className="mt-3 grid grid-cols-7 gap-1 border-b border-[rgba(218,195,152,0.12)] pb-3"
         data-testid="schedule-mini-week"
       >
-        {weekDays.map((d) => (
-          <div
-            key={d.iso}
-            className={`flex flex-col items-center rounded-[7px] py-1 ${
-              d.isToday
-                ? "bg-[rgba(224,177,104,0.18)] border border-[rgba(224,177,104,0.44)]"
-                : "border border-transparent"
-            }`}
-          >
-            <span className="font-ui text-[0.55rem] uppercase tracking-[0.1em] text-[var(--text-muted)]">
-              {d.letter}
-            </span>
-            <span
-              className={`mt-0.5 font-ui tabular-nums text-[0.72rem] ${
-                d.isToday
-                  ? "text-[var(--text-ivory)] font-medium"
-                  : "text-[var(--text-ivory-soft)]/70"
-              }`}
-            >
-              {d.dayNum}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* 1. ACTIVE NOW SECTION (with Live Progress Hairline + Direct Start Button for Focus Blocks) */}
-      <div className="mt-3" data-testid="schedule-active-now">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                activeItem
-                  ? activeItem.kind === "external_ics"
-                    ? "bg-[#C5A059]"
-                    : "bg-[var(--accent-luminous)]"
-                  : "bg-[var(--text-muted)]/50"
-              }`}
-            />
-            <span
-              className={`font-ui text-[0.58rem] uppercase tracking-[0.2em] ${
-                activeItem?.kind === "external_ics"
-                  ? "text-[#C5A059]"
-                  : "text-[var(--accent-luminous)]/90"
-              }`}
-            >
-              {activeItem
-                ? activeItem.kind === "external_ics"
-                  ? "Active Now · Calendar"
-                  : "Active Now · Focus Block"
-                : "Active Now"}
-            </span>
-          </div>
-
-          {activeItem && activeItem.kind !== "external_ics" && (
+        {weekDays.map((d) => {
+          const isSelected = d.iso === selectedDateIso;
+          const hasEvents = (dayItemCounts[d.iso] ?? 0) > 0;
+          return (
             <button
+              key={d.iso}
               type="button"
-              onClick={() =>
-                onStartFocusBlock(activeItem.title, activeItem.durationMinutes)
-              }
-              data-testid="schedule-active-start-btn"
-              className="cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.48)] bg-[rgba(226,180,109,0.16)] px-2.5 py-0.5 flex items-center gap-1 font-ui text-[0.58rem] uppercase tracking-[0.14em] text-[var(--text-ivory)] hover:bg-[rgba(226,180,109,0.28)] transition-colors"
+              onClick={() => setSelectedDateIso(d.iso)}
+              data-testid={`mini-week-day-${d.iso}`}
+              aria-pressed={isSelected}
+              title={`View schedule for ${formatIsoDayLabel(d.iso)}`}
+              className={`cursor-pointer flex flex-col items-center rounded-[6px] py-1 transition-colors ${
+                isSelected
+                  ? "bg-[rgba(224,177,104,0.22)] border border-[rgba(224,177,104,0.58)]"
+                  : d.isToday
+                  ? "bg-[rgba(224,177,104,0.08)] border border-[rgba(224,177,104,0.26)] hover:bg-[rgba(224,177,104,0.16)]"
+                  : "border border-transparent bg-transparent hover:bg-[rgba(237,234,224,0.06)] hover:border-[rgba(218,195,152,0.18)]"
+              }`}
             >
-              <Play className="h-2.5 w-2.5 fill-current" />
-              Start
-            </button>
-          )}
-        </div>
-
-        {activeItem ? (
-          <div className="mt-1.5">
-            <div className="font-editorial text-[1.08rem] leading-snug text-[var(--text-ivory)]">
-              {activeItem.title}
-            </div>
-            <div className="mt-0.5 font-ui tabular-nums text-[0.65rem] tracking-[0.06em] text-[var(--text-muted)]">
-              {formatTimeHHMM(activeItem.startTime, timeFormat)} to{" "}
-              {formatTimeHHMM(activeItem.endTime, timeFormat)} · {activeItem.category}
-            </div>
-            {/* Live Progress Hairline */}
-            <div
-              data-testid="schedule-active-progress"
-              className="mt-2 h-[2px] w-full rounded-full bg-[rgba(237,234,224,0.14)] overflow-hidden"
-            >
-              <div
-                className={`h-full transition-all duration-700 ${
-                  activeItem.kind === "external_ics"
-                    ? "bg-[#C5A059]"
-                    : "bg-[var(--accent-luminous)]"
-                }`}
-                style={{ width: `${activeProgressPct}%` }}
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="mt-1 font-reading text-[0.9rem] text-[var(--text-muted)]">
-            No scheduled block right now
-          </div>
-        )}
-      </div>
-
-      {/* 2. UP NEXT (Next 3 Upcoming Items for Today's Logical Day) */}
-      <div
-        className="mt-3 space-y-2 border-t border-[rgba(214,224,212,0.08)] pt-2.5"
-        data-testid="schedule-up-next"
-      >
-        <div className="flex items-center justify-between">
-          <span className="font-ui text-[0.56rem] uppercase tracking-[0.2em] text-[var(--text-muted)]">
-            Up Next
-          </span>
-          {nextThreeItems.length > 0 && (
-            <span className="font-ui tabular-nums text-[0.54rem] uppercase tracking-[0.14em] text-[var(--text-muted)]/70">
-              Next {nextThreeItems.length}
-            </span>
-          )}
-        </div>
-
-        {nextThreeItems.length > 0 ? (
-          nextThreeItems.map((item) => {
-            const isExternal = item.kind === "external_ics";
-            return (
-              <div
-                key={item.id}
-                data-testid={isExternal ? "external-ics-event-row" : "focus-block-schedule-row"}
-                className={`flex items-baseline justify-between gap-2 pl-2.5 border-l ${
-                  isExternal
-                    ? "border-[rgba(224,177,104,0.68)]"
-                    : "border-[rgba(159,176,195,0.46)]"
+              <span className="font-ui text-[0.55rem] uppercase tracking-[0.1em] text-[var(--text-muted)]">
+                {d.letter}
+              </span>
+              <span
+                className={`mt-0.5 font-ui tabular-nums text-[0.72rem] ${
+                  isSelected || d.isToday
+                    ? "text-[var(--text-ivory)] font-medium"
+                    : "text-[var(--text-ivory-soft)]/75"
                 }`}
               >
-                <div className="min-w-0 flex items-center gap-1.5">
-                  <span
-                    className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-                      isExternal ? "bg-[#C5A059]" : "bg-[var(--accent-luminous)]/80"
-                    }`}
-                    title={isExternal ? "Read-only .ics Event" : "Focus Block"}
-                  />
-                  <span className="font-reading text-[0.92rem] text-[var(--text-ivory-soft)] truncate">
-                    {item.title}
-                  </span>
-                </div>
-                <span className="font-ui tabular-nums text-[0.64rem] text-[var(--text-muted)] shrink-0">
-                  {item.allDay
-                    ? "All Day"
-                    : formatTimeHHMM(item.startTime, timeFormat)}
+                {d.dayNum}
+              </span>
+              <span
+                className={`mt-0.5 h-1 w-1 rounded-full ${
+                  hasEvents ? "bg-[#E2B46D]/85" : "bg-transparent"
+                }`}
+              />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* SCHEDULE BODY: Live Active Now + Up Next (Today) OR Selected Day's Schedule */}
+      {isViewingToday ? (
+        <>
+          {/* 1. ACTIVE NOW SECTION */}
+          <div className="mt-3" data-testid="schedule-active-now">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    activeItem
+                      ? activeItem.kind === "external_ics"
+                        ? "bg-[#C5A059]"
+                        : "bg-[var(--accent-luminous)]"
+                      : "bg-[var(--text-muted)]/50"
+                  }`}
+                />
+                <span
+                  className={`font-ui text-[0.58rem] uppercase tracking-[0.2em] ${
+                    activeItem?.kind === "external_ics"
+                      ? "text-[#C5A059]"
+                      : "text-[var(--accent-luminous)]/90"
+                  }`}
+                >
+                  {activeItem
+                    ? activeItem.kind === "external_ics"
+                      ? "Active Now · Calendar"
+                      : "Active Now · Focus Block"
+                    : "Active Now"}
                 </span>
               </div>
-            );
-          })
-        ) : (
-          <div className="font-reading text-[0.86rem] text-[var(--text-muted)]/85">
-            No more scheduled blocks today.
+
+              {activeItem && activeItem.kind !== "external_ics" && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onStartFocusBlock(activeItem.title, activeItem.durationMinutes)
+                  }
+                  data-testid="schedule-active-start-btn"
+                  className="cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.48)] bg-[rgba(226,180,109,0.16)] px-2.5 py-0.5 flex items-center gap-1 font-ui text-[0.58rem] uppercase tracking-[0.14em] text-[var(--text-ivory)] hover:bg-[rgba(226,180,109,0.28)] transition-colors"
+                >
+                  <Play className="h-2.5 w-2.5 fill-current" />
+                  Start
+                </button>
+              )}
+            </div>
+
+            {activeItem ? (
+              <div className="mt-1.5">
+                <div className="font-editorial text-[1.08rem] leading-snug text-[var(--text-ivory)]">
+                  {activeItem.title}
+                </div>
+                <div className="mt-0.5 font-ui tabular-nums text-[0.65rem] tracking-[0.06em] text-[var(--text-muted)]">
+                  {formatTimeHHMM(activeItem.startTime, timeFormat)} to{" "}
+                  {formatTimeHHMM(activeItem.endTime, timeFormat)} · {activeItem.category}
+                </div>
+                {/* Live Progress Hairline */}
+                <div
+                  data-testid="schedule-active-progress"
+                  className="mt-2 h-[2px] w-full rounded-full bg-[rgba(237,234,224,0.14)] overflow-hidden"
+                >
+                  <div
+                    className={`h-full transition-all duration-700 ${
+                      activeItem.kind === "external_ics"
+                        ? "bg-[#C5A059]"
+                        : "bg-[var(--accent-luminous)]"
+                    }`}
+                    style={{ width: `${activeProgressPct}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="mt-1 font-reading text-[0.9rem] text-[var(--text-muted)]">
+                No scheduled block right now
+              </div>
+            )}
           </div>
-        )}
-      </div>
+
+          {/* 2. UP NEXT (Next 3 Upcoming Items for Today's Logical Day) */}
+          <div
+            className="mt-3 space-y-2 border-t border-[rgba(214,224,212,0.08)] pt-2.5"
+            data-testid="schedule-up-next"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-ui text-[0.56rem] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+                Up Next
+              </span>
+              {nextThreeItems.length > 0 && (
+                <span className="font-ui tabular-nums text-[0.54rem] uppercase tracking-[0.14em] text-[var(--text-muted)]/70">
+                  Next {nextThreeItems.length}
+                </span>
+              )}
+            </div>
+
+            {nextThreeItems.length > 0 ? (
+              nextThreeItems.map((item) => {
+                const isExternal = item.kind === "external_ics";
+                return (
+                  <div
+                    key={item.id}
+                    data-testid={isExternal ? "external-ics-event-row" : "focus-block-schedule-row"}
+                    className={`flex items-baseline justify-between gap-2 pl-2.5 border-l ${
+                      isExternal
+                        ? "border-[rgba(224,177,104,0.68)]"
+                        : "border-[rgba(159,176,195,0.46)]"
+                    }`}
+                  >
+                    <div className="min-w-0 flex items-center gap-1.5">
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                          isExternal ? "bg-[#C5A059]" : "bg-[var(--accent-luminous)]/80"
+                        }`}
+                        title={isExternal ? "Read-only .ics Event" : "Focus Block"}
+                      />
+                      <span className="font-reading text-[0.92rem] text-[var(--text-ivory-soft)] truncate">
+                        {item.title}
+                      </span>
+                    </div>
+                    <span className="font-ui tabular-nums text-[0.64rem] text-[var(--text-muted)] shrink-0">
+                      {item.allDay
+                        ? "All Day"
+                        : formatTimeHHMM(item.startTime, timeFormat)}
+                    </span>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="font-reading text-[0.86rem] text-[var(--text-muted)]/85">
+                No more scheduled blocks today.
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <div
+          className="mt-3 space-y-2"
+          data-testid="schedule-selected-day-list"
+        >
+          <div className="flex items-center justify-between">
+            <span className="font-ui text-[0.56rem] uppercase tracking-[0.2em] text-[#E2B46D]">
+              Scheduled ({selectedDayItems.length})
+            </span>
+          </div>
+
+          {selectedDayItems.length > 0 ? (
+            <div
+              data-local-scroll="true"
+              className="max-h-[168px] space-y-2 overflow-y-auto overscroll-contain pr-1"
+            >
+              {selectedDayItems.map((item) => {
+                const isExternal = item.kind === "external_ics";
+                return (
+                  <div
+                    key={item.id}
+                    className={`flex items-baseline justify-between gap-2 pl-2.5 border-l ${
+                      isExternal
+                        ? "border-[rgba(224,177,104,0.68)]"
+                        : "border-[rgba(159,176,195,0.46)]"
+                    }`}
+                  >
+                    <div className="min-w-0 flex items-center gap-1.5">
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                          isExternal ? "bg-[#C5A059]" : "bg-[var(--accent-luminous)]/80"
+                        }`}
+                      />
+                      <span className="font-reading text-[0.92rem] text-[var(--text-ivory-soft)] truncate">
+                        {item.title}
+                      </span>
+                    </div>
+                    <span className="font-ui tabular-nums text-[0.62rem] text-[var(--text-muted)] shrink-0">
+                      {item.allDay
+                        ? "All Day"
+                        : `${formatTimeHHMM(item.startTime, timeFormat)} – ${formatTimeHHMM(
+                            item.endTime,
+                            timeFormat
+                          )}`}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-3 font-reading text-[0.88rem] text-[var(--text-muted)]/85">
+              No scheduled events or blocks on this day.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 3. DISPLACED RECURRING BLOCK ALERT BADGE & SIDE-FLOATING RESCHEDULE / SKIP DRAWER */}
       {displaced.length > 0 && (
@@ -446,7 +583,7 @@ export function ScheduleReadout({
                             onClick={() =>
                               onRescheduleRecurring(
                                 d.block.id,
-                                todayIso,
+                                selectedDateIso,
                                 slot.startTime,
                                 d.block.durationMinutes
                               )
@@ -476,7 +613,7 @@ export function ScheduleReadout({
                         onClick={() =>
                           onRescheduleRecurring(
                             d.block.id,
-                            todayIso,
+                            selectedDateIso,
                             customVal,
                             d.block.durationMinutes
                           )
@@ -487,11 +624,11 @@ export function ScheduleReadout({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onSkipRecurringToday(d.block.id, todayIso)}
+                        onClick={() => onSkipRecurringToday(d.block.id, selectedDateIso)}
                         data-testid={`skip-displaced-${d.block.id}`}
                         className="cursor-pointer bg-transparent border-0 px-1.5 py-0.5 font-ui text-[0.58rem] uppercase tracking-[0.1em] text-[var(--text-muted)] hover:text-[var(--text-ivory)]"
                       >
-                        Skip Today
+                        Skip Day
                       </button>
                     </div>
                   </div>
@@ -508,7 +645,7 @@ export function ScheduleReadout({
           <form onSubmit={handleQuickAdd} className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="font-ui text-[0.58rem] uppercase tracking-[0.18em] text-[var(--accent-brass)]">
-                New Focus Block
+                New Block · {isViewingToday ? "Today" : selectedDateIso}
               </span>
               <button
                 type="button"

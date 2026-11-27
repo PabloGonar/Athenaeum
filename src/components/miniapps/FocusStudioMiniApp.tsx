@@ -252,7 +252,7 @@ export function FocusStudioMiniApp({
     rgbToHex(config.haFocusPreset?.rgbColor ?? [128, 0, 255])
   );
   const [brightnessPct, setBrightnessPct] = useState<number>(() =>
-    Math.max(1, Math.min(100, config.haFocusPreset?.brightnessPct ?? 45))
+    Math.max(0, Math.min(100, typeof config.haFocusPreset?.brightnessPct === "number" ? config.haFocusPreset.brightnessPct : 45))
   );
   const [lightBusy, setLightBusy] = useState(false);
 
@@ -379,7 +379,7 @@ export function FocusStudioMiniApp({
   const dailyPct = Math.min(100, Math.round((todayTotalSeconds / targetTotalSeconds) * 100));
 
   const applySwatch = async (swatch: LightSwatch, overrideBrightness?: number) => {
-    const pct = Math.max(1, Math.min(100, overrideBrightness ?? brightnessPct));
+    const pct = Math.max(0, Math.min(100, overrideBrightness ?? brightnessPct));
     setSelectedSwatchId(swatch.id);
     if (swatch.mode === "rgb") {
       setCustomHex(swatch.previewHex);
@@ -403,7 +403,7 @@ export function FocusStudioMiniApp({
 
   const applyCustomRgb = async (hex: string, overrideBrightness?: number) => {
     const rgb = hexToRgb(hex);
-    const pct = Math.max(1, Math.min(100, overrideBrightness ?? brightnessPct));
+    const pct = Math.max(0, Math.min(100, overrideBrightness ?? brightnessPct));
     setCustomHex(hex);
     setSelectedSwatchId("custom");
     setLightBusy(true);
@@ -423,13 +423,32 @@ export function FocusStudioMiniApp({
   };
 
   const commitBrightness = async (nextPct: number) => {
-    const clamped = Math.max(1, Math.min(100, nextPct));
+    const clamped = Math.max(0, Math.min(100, nextPct));
     setBrightnessPct(clamped);
     const activeSwatch = LIGHT_SWATCHES.find((s) => s.id === selectedSwatchId);
     if (activeSwatch) {
       await applySwatch(activeSwatch, clamped);
     } else {
       await applyCustomRgb(customHex, clamped);
+    }
+  };
+
+  const applyScenePreset = async (sceneEntityId: string, label: string) => {
+    const clean = sceneEntityId.trim();
+    if (!clean) return;
+    setSelectedSwatchId(`scene:${clean}`);
+    setLightBusy(true);
+    try {
+      await onApplyLightCommand(
+        {
+          mode: "scene",
+          brightnessPct: 100,
+          sceneEntityId: clean,
+        },
+        label
+      );
+    } finally {
+      setLightBusy(false);
     }
   };
 
@@ -1082,7 +1101,46 @@ export function FocusStudioMiniApp({
               </label>
             </div>
 
-            {/* Full 1-100% Brightness Slider */}
+            {/* Configured Home Assistant Scene Triggers (if any preset defines a scene.*) */}
+            {(config.haFocusPreset?.sceneEntityId?.trim() ||
+              config.haNonFocusPreset?.sceneEntityId?.trim() ||
+              config.haReadingPreset?.sceneEntityId?.trim()) && (
+              <div className="flex flex-wrap gap-1.5" data-testid="ha-scene-quick-triggers">
+                {[
+                  {
+                    label: "Focus Scene",
+                    sceneId: config.haFocusPreset?.sceneEntityId?.trim() || "",
+                  },
+                  {
+                    label: "Idle Scene",
+                    sceneId: config.haNonFocusPreset?.sceneEntityId?.trim() || "",
+                  },
+                  {
+                    label: "Reading Scene",
+                    sceneId: config.haReadingPreset?.sceneEntityId?.trim() || "",
+                  },
+                ]
+                  .filter((s) => Boolean(s.sceneId))
+                  .map((s) => (
+                    <button
+                      key={s.label}
+                      type="button"
+                      disabled={lightBusy}
+                      onClick={() => void applyScenePreset(s.sceneId, s.label)}
+                      title={s.sceneId}
+                      className={`cursor-pointer rounded-[6px] border px-2.5 py-1 font-ui text-[0.56rem] uppercase tracking-[0.12em] transition-colors ${
+                        selectedSwatchId === `scene:${s.sceneId}`
+                          ? "border-[#E2B46D]/75 bg-[rgba(226,180,109,0.18)] text-[var(--text-ivory)]"
+                          : "border-[var(--glass-border)] bg-[var(--surface-inner)] text-[#E2B46D] hover:border-[#E2B46D]/50"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+              </div>
+            )}
+
+            {/* Full 0-100% Brightness Slider */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="font-ui text-[0.58rem] uppercase tracking-[0.16em] text-[var(--text-muted)]">
@@ -1097,11 +1155,11 @@ export function FocusStudioMiniApp({
               </div>
               <input
                 type="range"
-                min={1}
+                min={0}
                 max={100}
                 value={brightnessPct}
                 data-testid="ha-brightness-slider"
-                onChange={(e) => setBrightnessPct(Math.max(1, Math.min(100, Number(e.target.value))))}
+                onChange={(e) => setBrightnessPct(Math.max(0, Math.min(100, Number(e.target.value))))}
                 onMouseUp={(e) =>
                   void commitBrightness(Number((e.target as HTMLInputElement).value))
                 }

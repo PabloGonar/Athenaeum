@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Reorder } from "framer-motion";
 import {
   BookOpen,
+  CalendarPlus,
   Check,
   Clock,
   Crosshair,
@@ -41,6 +42,7 @@ interface GoalsMiniAppProps {
   onDeleteMilestone: (id: string) => void;
   onReorderMilestones: (goalId: string, ordered: GoalMilestone[]) => void;
   onFocusOnGoal: (title: string) => void;
+  onAddToCalendar?: (goal: GoalItem) => void;
   onOpenDailyDebrief: () => void;
   onClose: () => void;
 }
@@ -140,6 +142,7 @@ export function GoalsMiniApp({
   onDeleteMilestone,
   onReorderMilestones,
   onFocusOnGoal,
+  onAddToCalendar,
   onOpenDailyDebrief,
   onClose,
 }: GoalsMiniAppProps) {
@@ -866,8 +869,20 @@ export function GoalsMiniApp({
                       </div>
                     )}
 
-                    {/* Secondary Row Actions Strictly Hidden Until Hover: Focus, Edit, Delete */}
+                    {/* Secondary Row Actions Strictly Hidden Until Hover: Add to Calendar, Focus, Edit, Delete */}
                     <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
+                      {onAddToCalendar && (
+                        <button
+                          type="button"
+                          onClick={() => onAddToCalendar(goal)}
+                          data-testid={`goal-calendar-btn-${goal.id}`}
+                          title="Add to Calendar"
+                          aria-label={`Add ${goal.title} to Calendar`}
+                          className="cursor-pointer rounded-[3px] border border-[rgba(226,180,109,0.28)] bg-transparent p-1 text-[var(--text-muted)] hover:border-[rgba(226,180,109,0.5)] hover:bg-[rgba(226,180,109,0.12)] hover:text-[#E2B46D] transition-colors"
+                        >
+                          <CalendarPlus className="h-3.5 w-3.5" strokeWidth={1.6} />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onFocusOnGoal(goal.title)}

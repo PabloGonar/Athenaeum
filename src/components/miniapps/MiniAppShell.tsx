@@ -23,6 +23,7 @@ interface MiniAppShellProps {
   rightSlot?: React.ReactNode;
   lockScroll?: boolean;
   wide?: boolean;
+  opaque?: boolean;
   children: React.ReactNode;
 }
 
@@ -43,11 +44,12 @@ export function MiniAppShell({
   rightSlot,
   lockScroll = false,
   wide = false,
+  opaque = false,
   children,
 }: MiniAppShellProps) {
   const navCtx = useContext(RoomNavigationContext);
   const resolvedRoomId = roomId !== undefined ? roomId : navCtx.activeRoomId;
-  const roomMeta = resolvedRoomId ? CHAMBER_ROOM_MAP[resolvedRoomId] : null;
+  const roomMeta = !opaque && resolvedRoomId ? CHAMBER_ROOM_MAP[resolvedRoomId] : null;
   const isChamberRoom = Boolean(roomMeta);
   const returnLabel = isChamberRoom ? "Workspace" : "Overview";
 
@@ -56,6 +58,7 @@ export function MiniAppShell({
       data-testid="miniapp-shell"
       data-room-id={resolvedRoomId ?? "overlay"}
       data-glass-theme={isChamberRoom ? "chamber" : "surface"}
+      data-opaque={opaque ? "true" : "false"}
       initial={
         roomMeta
           ? { opacity: 0, scale: 0.94 }
@@ -73,7 +76,12 @@ export function MiniAppShell({
       }
       transition={roomMeta ? ROOM_ZOOM_TRANSITION : STANDARD_MODAL_TRANSITION}
       style={
-        roomMeta
+        opaque
+          ? {
+              backgroundColor: "#0B0F17",
+              willChange: "transform, opacity",
+            }
+          : roomMeta
           ? {
               background: "transparent",
               transformOrigin: `${roomMeta.center.xPct}% ${roomMeta.center.yPct}%`,
@@ -84,12 +92,12 @@ export function MiniAppShell({
               willChange: "transform, opacity",
             }
       }
-      className={`fixed inset-0 z-40 isolate overflow-hidden text-[var(--text-ivory)] ${
+      className={`absolute inset-0 z-40 isolate overflow-hidden text-[var(--text-ivory)] ${
         isChamberRoom ? "theme-chamber bg-transparent" : "theme-surface"
       }`}
     >
-      {/* Locked non-scrolling full-room backdrop behind transparent shell (z-index: -1 inside isolated z-40) */}
-      {resolvedRoomId && <RoomBackdrop roomId={resolvedRoomId} />}
+      {/* Locked non-scrolling full-room backdrop behind transparent shell (skipped for opaque views) */}
+      {!opaque && resolvedRoomId && <RoomBackdrop roomId={resolvedRoomId} />}
 
       {/* Dedicated foreground scroll viewport so ONLY UI cards scroll while backdrop stays locked */}
       <div
@@ -99,21 +107,23 @@ export function MiniAppShell({
           lockScroll ? "overflow-y-auto md:overflow-hidden" : "overflow-y-auto"
         }`}
       >
-        {/* Top Return & Surface Ascent Bar (GPU-friendly solid-translucent backing, zero backdrop-filter animation cost) */}
+        {/* Top Return & Surface Ascent Bar */}
         <header
-          className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-4 border-b border-[var(--glass-border)] px-8 py-5 md:px-14"
+          className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-4 border-b border-[var(--glass-border)] px-8 py-4 md:px-14"
           style={{
-            backgroundColor: isChamberRoom
+            backgroundColor: opaque
+              ? "#0B0F17"
+              : isChamberRoom
               ? "rgba(18, 13, 10, 0.88)"
-              : "rgba(10, 16, 26, 0.9)",
+              : "rgba(10, 16, 26, 0.92)",
           }}
         >
-          <div className="flex items-center gap-5">
+          <div className="flex items-center gap-4">
             <button
               type="button"
               onClick={onClose}
               data-testid="miniapp-return-btn"
-              className="chamber-return-btn group flex items-center gap-2 p-0 cursor-pointer text-[var(--text-ivory-soft)]/82 hover:text-[#E2B46D] focus-visible:text-[#E2B46D] transition-colors duration-200"
+              className="chamber-return-btn group -ml-2 flex cursor-pointer items-center gap-2 rounded-[4px] border border-transparent px-[14px] py-[8px] text-[var(--text-ivory-soft)]/88 hover:border-[rgba(226,180,109,0.28)] hover:bg-[rgba(226,180,109,0.08)] hover:text-[#E2B46D] focus-visible:text-[#E2B46D] transition-colors duration-200"
             >
               <ArrowLeft
                 className="h-4 w-4 text-[var(--accent-brass)] group-hover:text-[#E2B46D] transition-colors duration-200"

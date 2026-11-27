@@ -113,6 +113,11 @@ export function App() {
   const [defaultLocalNotesPath, setDefaultLocalNotesPath] = useState("");
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const [activeMiniApp, setActiveMiniApp] = useState<MiniAppId>(null);
+  const [pendingCalendarEvent, setPendingCalendarEvent] = useState<{
+    title: string;
+    date?: string;
+    durationMinutes?: number;
+  } | null>(null);
   const [goalsInitialTab, setGoalsInitialTab] = useState<GoalScope>("daily");
   const [journalInitialMode, setJournalInitialMode] = useState<JournalMode>("debrief");
   const [vaultToast, setVaultToast] = useState<string | null>(null);
@@ -514,7 +519,7 @@ export function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isQuickCaptureCombo =
         (e.altKey && (e.code === "Space" || e.key === " ")) ||
-        (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "a");
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "a");
       if (isQuickCaptureCombo) {
         e.preventDefault();
         setQuickCaptureOpen((prev) => !prev);
@@ -645,8 +650,11 @@ export function App() {
     async (command: HaLightCommand, presetLabel?: string) => {
       if (!config) return;
       const res = await storageService.setHaLightState(command, config);
+      const isScene = Boolean(command.sceneEntityId?.trim()) || command.mode === "scene";
       const label = res.ok
-        ? presetLabel
+        ? isScene
+          ? res.message
+          : presetLabel
           ? `Set room lighting to ${presetLabel} (${res.appliedBrightnessPct}%).`
           : `Set room lighting brightness to ${res.appliedBrightnessPct}%.`
         : res.message ||
@@ -685,16 +693,18 @@ export function App() {
       focusStoppingRef.current = false;
       setFocusRunning(true);
 
-      // Direct Home Assistant REST lighting transition on Focus start
+      // Direct Home Assistant REST lighting/scene transition on Focus start (full 0-100% brightness)
       if (config && config.haAutoLight) {
         const preset = config.haFocusPreset;
+        const sceneId = preset.sceneEntityId?.trim() || "";
         void handleApplyLightCommand(
           {
-            mode: preset.mode,
+            mode: sceneId ? "scene" : preset.mode,
             rgbColor: preset.rgbColor,
             kelvin: preset.kelvin,
-            brightnessPct: Math.min(50, preset.brightnessPct),
+            brightnessPct: Math.max(0, Math.min(100, preset.brightnessPct)),
             entityId: config.haEntityId || "",
+            sceneEntityId: sceneId || undefined,
           },
           preset.name || "Focus Light"
         );
@@ -732,16 +742,18 @@ export function App() {
         ambientAudio.playCompletionChime();
       }
 
-      // Automatically restore warm post-focus room lighting when Auto-Light is active
+      // Automatically restore post-focus room lighting or scene when Auto-Light is active (full 0-100%)
       if (config && config.haAutoLight) {
         const warm = config.haNonFocusPreset;
+        const sceneId = warm.sceneEntityId?.trim() || "";
         void handleApplyLightCommand(
           {
-            mode: warm.mode,
+            mode: sceneId ? "scene" : warm.mode,
             rgbColor: warm.rgbColor,
             kelvin: warm.kelvin,
-            brightnessPct: Math.min(50, warm.brightnessPct),
+            brightnessPct: Math.max(0, Math.min(100, warm.brightnessPct)),
             entityId: config.haEntityId || "",
+            sceneEntityId: sceneId || undefined,
           },
           warm.name || "Warm Restore"
         );
@@ -1118,11 +1130,13 @@ export function App() {
     <div
       data-active-tier={activeTier}
       data-logical-date={logicalToday}
-      className="relative h-screen w-screen overflow-hidden bg-[var(--bg-deep)] text-[var(--text-ivory)]"
+      className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--bg-deep)] text-[var(--text-ivory)]"
     >
-      {/* Frameless Windows Drag Bar & Window Controls (Tauri runtime only) */}
+      {/* Dedicated 32px Top Window Titlebar Row (Tauri runtime only, never overlaps mini-app headers) */}
       <WindowTitleBar />
 
+      {/* Main Application Stage cleanly below the 32px WindowTitleBar */}
+      <div className="relative flex-1 min-h-0 w-full overflow-hidden">
       {vaultToast && (
         <div
           data-testid="vault-toast"
@@ -1132,15 +1146,15 @@ export function App() {
         </div>
       )}
 
-      {/* Strict Single-Tick Two-Tier Viewport Stack (0vh Upper Observatory <-> -100vh Secret Chamber) */}
+      {/* Strict Single-Tick Two-Tier Viewport Stack (0% Upper Observatory <-> -50% Workspace) */}
       <motion.div
         data-testid="athenaeum-tier-stack"
         initial={false}
-        animate={{ y: activeTier === 0 ? "0vh" : "-100vh" }}
+        animate={{ y: activeTier === 0 ? "0%" : "-50%" }}
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-        className="h-[200vh] w-full will-change-transform"
+        className="flex h-[200%] w-full flex-col will-change-transform"
       >
-        {/* ==================== UPPER ZONE: THE ATHENAEUM (100vh) ==================== */}
+        {/* ==================== UPPER ZONE: THE ATHENAEUM (50% of 200% stack) ==================== */}
         <section
           id="observatory"
           data-testid="upper-observatory"
@@ -1151,7 +1165,7 @@ export function App() {
               spawnStickyNote();
             }
           }}
-          className="relative h-screen w-full shrink-0 overflow-hidden bg-[#070d16]"
+          className="relative h-1/2 w-full shrink-0 overflow-hidden bg-[#070d16]"
         >
           <ObservatoryBackdrop isFocusMode={focusRunning} />
           <AmbientWildlifeLayer
@@ -1499,6 +1513,14 @@ export function App() {
               void handleReorderMilestones(gid, ordered)
             }
             onFocusOnGoal={handleFocusOnGoal}
+            onAddToCalendar={(goal) => {
+              setPendingCalendarEvent({
+                title: goal.title,
+                date: logicalToday,
+                durationMinutes: goal.durationMinutes > 0 ? goal.durationMinutes : 60,
+              });
+              setActiveMiniApp("calendar");
+            }}
             onOpenDailyDebrief={() => {
               setJournalInitialMode("debrief");
               setActiveMiniApp("journal");
@@ -1566,7 +1588,12 @@ export function App() {
             onDeleteRecurringBlock={handleDeleteRecurringBlock}
             onUpsertOverride={handleUpsertBlockOverride}
             onStartFocusBlock={handleStartFocusBlock}
-            onClose={() => setActiveMiniApp(null)}
+            initialCreateEvent={pendingCalendarEvent}
+            onConsumeInitialCreateEvent={() => setPendingCalendarEvent(null)}
+            onClose={() => {
+              setPendingCalendarEvent(null);
+              setActiveMiniApp(null);
+            }}
           />
         )}
 
@@ -1716,6 +1743,7 @@ export function App() {
         )}
         </AnimatePresence>
       </RoomNavigationContext.Provider>
+      </div>
     </div>
   );
 }

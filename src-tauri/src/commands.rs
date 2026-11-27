@@ -68,11 +68,11 @@ pub fn save_config(
     mut config: AthenaeumConfig,
 ) -> Result<AthenaeumConfig, String> {
     let prev = load_or_init_config(&state.config_path).ok();
-    config.ha_focus_preset.brightness_pct = config.ha_focus_preset.brightness_pct.clamp(1, 100);
+    config.ha_focus_preset.brightness_pct = config.ha_focus_preset.brightness_pct.clamp(0, 100);
     config.ha_non_focus_preset.brightness_pct =
-        config.ha_non_focus_preset.brightness_pct.clamp(1, 100);
+        config.ha_non_focus_preset.brightness_pct.clamp(0, 100);
     config.ha_reading_preset.brightness_pct =
-        config.ha_reading_preset.brightness_pct.clamp(1, 100);
+        config.ha_reading_preset.brightness_pct.clamp(0, 100);
 
     if config.ingest_api_token.trim().is_empty() {
         config.ingest_api_token = prev
@@ -1638,28 +1638,76 @@ pub async fn trigger_reading_light_webhook(
     enabled: bool,
 ) -> Result<String, String> {
     let cfg = load_or_init_config(&state.config_path)?;
+    let base_url = cfg.ha_base_url.trim().trim_end_matches('/').to_string();
+
+    // Prefer direct Home Assistant REST (Scene or Light preset) when HA Base URL is configured
+    if !base_url.is_empty() {
+        let preset = if enabled {
+            &cfg.ha_reading_preset
+        } else {
+            &cfg.ha_non_focus_preset
+        };
+        let scene_id = preset.scene_entity_id.trim().to_string();
+        let light_entity = if !cfg.ha_reading_light_entity.trim().is_empty() {
+            cfg.ha_reading_light_entity.trim().to_string()
+        } else {
+            cfg.ha_entity_id.trim().to_string()
+        };
+
+        if !scene_id.is_empty() || !light_entity.is_empty() {
+            let cmd = HaLightCommand {
+                mode: if !scene_id.is_empty() {
+                    "scene".to_string()
+                } else {
+                    preset.mode.clone()
+                },
+                rgb_color: Some(preset.rgb_color),
+                kelvin: Some(preset.kelvin),
+                brightness_pct: preset.brightness_pct,
+                entity_id: if light_entity.is_empty() {
+                    None
+                } else {
+                    Some(light_entity)
+                },
+                scene_entity_id: if scene_id.is_empty() {
+                    None
+                } else {
+                    Some(scene_id)
+                },
+                transition: Some(1.2),
+            };
+            let res = set_ha_light_state(state, cmd).await?;
+            return Ok(res.message);
+        }
+    }
+
     let url = if !cfg.ha_reading_webhook_url.trim().is_empty() {
         cfg.ha_reading_webhook_url.trim().to_string()
     } else {
         cfg.home_assistant_webhook_url.trim().to_string()
     };
     if url.is_empty() {
-        return Ok("Configure Reading Light webhook in Settings".to_string());
+        return Ok("Configure Home Assistant in Settings to control your lights".to_string());
     }
 
-    let entity_id = cfg.ha_reading_light_entity.trim().to_string();
+    let entity_id = if !cfg.ha_reading_light_entity.trim().is_empty() {
+        cfg.ha_reading_light_entity.trim().to_string()
+    } else {
+        cfg.ha_entity_id.trim().to_string()
+    };
     if entity_id.is_empty() {
-        return Ok("Configure Light Entity ID in Settings".to_string());
+        return Ok("Configure Light Entity ID or Scene in Settings".to_string());
     }
 
+    let applied_pct = cfg.ha_reading_preset.brightness_pct.clamp(0, 100);
     let client = reqwest::Client::new();
     let mut req = client.post(&url).json(&json!({
         "source": "athenaeum",
         "event": "reading_light",
         "state": if enabled { "on" } else { "off" },
         "entity_id": entity_id,
-        "color_temp_kelvin": 2700,
-        "brightness_pct": if enabled { 45 } else { 0 },
+        "color_temp_kelvin": cfg.ha_reading_preset.kelvin.clamp(2000, 6500),
+        "brightness_pct": if enabled { applied_pct } else { 0 },
         "timestamp": Local::now().to_rfc3339()
     }));
 
@@ -1852,11 +1900,12 @@ pub async fn trigger_ha_webhook(
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HaLightCommand {
-    pub mode: String, // "rgb" | "kelvin"
+    pub mode: String, // "rgb" | "kelvin" | "scene"
     pub rgb_color: Option<[u8; 3]>,
     pub kelvin: Option<u32>,
     pub brightness_pct: u8,
     pub entity_id: Option<String>,
+    pub scene_entity_id: Option<String>,
     pub transition: Option<f32>,
 }
 
@@ -1877,6 +1926,12 @@ pub async fn set_ha_light_state(
 ) -> Result<HaLightResult, String> {
     let cfg = load_or_init_config(&state.config_path)?;
     let base_url = cfg.ha_base_url.trim().trim_end_matches('/').to_string();
+    let scene_entity_id = command
+        .scene_entity_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
     let entity_id = command
         .entity_id
         .as_deref()
@@ -1885,9 +1940,68 @@ pub async fn set_ha_light_state(
         .unwrap_or_else(|| cfg.ha_entity_id.trim())
         .to_string();
 
-    // Full 1-100% brightness mapped cleanly to Home Assistant 0-255 brightness value
-    let applied_pct = command.brightness_pct.clamp(1, 100);
+    // Full 0-100% brightness mapped directly to Home Assistant 0-255 brightness value
+    let applied_pct = command.brightness_pct.clamp(0, 100);
     let brightness_255 = ((applied_pct as f64) * 2.55).round().clamp(0.0, 255.0) as u8;
+
+    let token = if !cfg.ha_token.trim().is_empty() {
+        cfg.ha_token.trim().to_string()
+    } else {
+        cfg.home_assistant_token.trim().to_string()
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+        .map_err(|e| format!("Failed creating HTTP client: {e}"))?;
+
+    // Scene activation path (controls multiple lights/devices simultaneously)
+    if !scene_entity_id.is_empty() || command.mode == "scene" {
+        if base_url.is_empty() || scene_entity_id.is_empty() {
+            return Ok(HaLightResult {
+                ok: false,
+                endpoint: String::new(),
+                entity_id: scene_entity_id,
+                applied_brightness_pct: applied_pct,
+                message: if base_url.is_empty() {
+                    "Home Assistant isn't connected yet. Set your Base URL in Settings.".to_string()
+                } else {
+                    "Enter a Scene Entity ID (e.g. scene.deep_focus) first.".to_string()
+                },
+            });
+        }
+
+        let endpoint = format!("{base_url}/api/services/scene/turn_on");
+        let body = json!({ "entity_id": scene_entity_id });
+        let mut req = client.post(&endpoint).json(&body);
+        if !token.is_empty() {
+            req = req.bearer_auth(&token);
+        }
+
+        return match req.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                Ok(HaLightResult {
+                    ok: status.is_success(),
+                    endpoint,
+                    entity_id: scene_entity_id.clone(),
+                    applied_brightness_pct: applied_pct,
+                    message: if status.is_success() {
+                        format!("Activated scene {scene_entity_id}.")
+                    } else {
+                        "Home Assistant isn't connected yet. Check your URL, token, and scene ID in Settings.".to_string()
+                    },
+                })
+            }
+            Err(_) => Ok(HaLightResult {
+                ok: false,
+                endpoint,
+                entity_id: scene_entity_id,
+                applied_brightness_pct: applied_pct,
+                message: "Home Assistant isn't connected yet. Set it up in Settings to trigger scenes.".to_string(),
+            }),
+        };
+    }
 
     if base_url.is_empty() || entity_id.is_empty() {
         return Ok(HaLightResult {
@@ -1898,12 +2012,6 @@ pub async fn set_ha_light_state(
             message: "Home Assistant isn't connected yet. Set it up in Settings to control your lights.".to_string(),
         });
     }
-
-    let token = if !cfg.ha_token.trim().is_empty() {
-        cfg.ha_token.trim().to_string()
-    } else {
-        cfg.home_assistant_token.trim().to_string()
-    };
 
     let endpoint = format!("{base_url}/api/services/light/turn_on");
     let transition = command.transition.unwrap_or(1.2);
@@ -1924,11 +2032,6 @@ pub async fn set_ha_light_state(
             "transition": transition,
         })
     };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(6))
-        .build()
-        .map_err(|e| format!("Failed creating HTTP client: {e}"))?;
 
     let mut req = client.post(&endpoint).json(&body);
     if !token.is_empty() {
@@ -1958,6 +2061,26 @@ pub async fn set_ha_light_state(
             message: "Home Assistant isn't connected yet. Set it up in Settings to control your lights.".to_string(),
         }),
     }
+}
+
+#[tauri::command]
+pub async fn trigger_ha_scene(
+    state: State<'_, AppState>,
+    scene_entity_id: String,
+) -> Result<HaLightResult, String> {
+    set_ha_light_state(
+        state,
+        HaLightCommand {
+            mode: "scene".to_string(),
+            rgb_color: None,
+            kelvin: None,
+            brightness_pct: 100,
+            entity_id: None,
+            scene_entity_id: Some(scene_entity_id),
+            transition: None,
+        },
+    )
+    .await
 }
 
 #[tauri::command]
