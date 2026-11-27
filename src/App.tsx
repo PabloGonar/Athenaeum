@@ -1130,13 +1130,11 @@ export function App() {
     <div
       data-active-tier={activeTier}
       data-logical-date={logicalToday}
-      className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--bg-deep)] text-[var(--text-ivory)]"
+      className="relative h-screen w-screen overflow-hidden bg-[var(--bg-deep)] text-[var(--text-ivory)]"
     >
-      {/* Dedicated 32px Top Window Titlebar Row (Tauri runtime only, never overlaps mini-app headers) */}
+      {/* Transparent 32px Top Window Titlebar (Tauri runtime only, artwork flows seamlessly behind it) */}
       <WindowTitleBar />
 
-      {/* Main Application Stage cleanly below the 32px WindowTitleBar */}
-      <div className="relative flex-1 min-h-0 w-full overflow-hidden">
       {vaultToast && (
         <div
           data-testid="vault-toast"
@@ -1146,15 +1144,15 @@ export function App() {
         </div>
       )}
 
-      {/* Strict Single-Tick Two-Tier Viewport Stack (0% Upper Observatory <-> -50% Workspace) */}
+      {/* Strict Single-Tick Two-Tier Viewport Stack (0vh Upper Observatory <-> -100vh Workspace) */}
       <motion.div
         data-testid="athenaeum-tier-stack"
         initial={false}
-        animate={{ y: activeTier === 0 ? "0%" : "-50%" }}
+        animate={{ y: activeTier === 0 ? "0vh" : "-100vh" }}
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-        className="flex h-[200%] w-full flex-col will-change-transform"
+        className="h-[200vh] w-full will-change-transform"
       >
-        {/* ==================== UPPER ZONE: THE ATHENAEUM (50% of 200% stack) ==================== */}
+        {/* ==================== UPPER ZONE: THE ATHENAEUM (100vh) ==================== */}
         <section
           id="observatory"
           data-testid="upper-observatory"
@@ -1165,7 +1163,7 @@ export function App() {
               spawnStickyNote();
             }
           }}
-          className="relative h-1/2 w-full shrink-0 overflow-hidden bg-[#070d16]"
+          className="relative h-screen w-full shrink-0 overflow-hidden bg-[#070d16]"
         >
           <ObservatoryBackdrop isFocusMode={focusRunning} />
           <AmbientWildlifeLayer
@@ -1215,11 +1213,18 @@ export function App() {
             onDragEnd={handleNoteDragEnd}
           />
 
-          {/* 16:9 Widescreen-First Spatial Overlay */}
+          {/* 16:9 Widescreen-First Spatial Overlay (reserves dedicated 32px top row in desktop runtime) */}
           <div
             data-canvas-surface="true"
-            className="pointer-events-none relative z-20 flex h-full w-full flex-col justify-between px-8 pb-7 pt-7"
+            className="pointer-events-none relative z-20 flex h-full w-full flex-col"
           >
+            {isTauriRuntime() && (
+              <div aria-hidden="true" className="h-8 w-full shrink-0 bg-transparent" />
+            )}
+            <div
+              data-canvas-surface="true"
+              className="pointer-events-none relative flex flex-1 min-h-0 w-full flex-col justify-between px-8 pb-7 pt-4"
+            >
             {/* TOP BAND */}
             <div className="flex w-full items-start justify-between gap-6">
               {/* TOP-LEFT CONTROLS: Settings Gear + "+ New Note" */}
@@ -1397,6 +1402,7 @@ export function App() {
                   onOpenFocusStudio={() => setActiveMiniApp("focus")}
                 />
               </div>
+            </div>
             </div>
           </div>
         </section>
@@ -1743,7 +1749,6 @@ export function App() {
         )}
         </AnimatePresence>
       </RoomNavigationContext.Provider>
-      </div>
     </div>
   );
 }

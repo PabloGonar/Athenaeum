@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 import { ArrowLeft, ArrowUp } from "lucide-react";
 import { motion } from "framer-motion";
 import { RoomBackdrop } from "./RoomBackdrop";
+import { isTauriRuntime } from "../../services/storage";
 import { CHAMBER_ROOM_MAP, type ChamberRoomId } from "../../utils/chamberRooms";
 
 export interface RoomNavigationContextValue {
@@ -52,6 +53,7 @@ export function MiniAppShell({
   const roomMeta = !opaque && resolvedRoomId ? CHAMBER_ROOM_MAP[resolvedRoomId] : null;
   const isChamberRoom = Boolean(roomMeta);
   const returnLabel = isChamberRoom ? "Workspace" : "Overview";
+  const hasDesktopTitlebar = isTauriRuntime();
 
   return (
     <motion.div
@@ -92,18 +94,27 @@ export function MiniAppShell({
               willChange: "transform, opacity",
             }
       }
-      className={`absolute inset-0 z-40 isolate overflow-hidden text-[var(--text-ivory)] ${
+      className={`fixed inset-0 z-40 isolate flex flex-col overflow-hidden text-[var(--text-ivory)] ${
         isChamberRoom ? "theme-chamber bg-transparent" : "theme-surface"
       }`}
     >
-      {/* Locked non-scrolling full-room backdrop behind transparent shell (skipped for opaque views) */}
+      {/* Locked non-scrolling full-room backdrop behind transparent shell (fills 0..100vh seamlessly behind transparent titlebar) */}
       {!opaque && resolvedRoomId && <RoomBackdrop roomId={resolvedRoomId} />}
 
-      {/* Dedicated foreground scroll viewport so ONLY UI cards scroll while backdrop stays locked */}
+      {/* Dedicated 32px top flex row reserving space for the transparent desktop titlebar so headers never collide */}
+      {hasDesktopTitlebar && (
+        <div
+          aria-hidden="true"
+          data-testid="miniapp-titlebar-row"
+          className="relative z-10 h-8 w-full shrink-0 bg-transparent"
+        />
+      )}
+
+      {/* Dedicated foreground scroll viewport starting cleanly below the titlebar row */}
       <div
         data-testid="miniapp-scroll-viewport"
         style={{ contain: "layout style" }}
-        className={`relative z-10 flex h-full w-full flex-col bg-transparent ${
+        className={`relative z-10 flex flex-1 min-h-0 w-full flex-col bg-transparent ${
           lockScroll ? "overflow-y-auto md:overflow-hidden" : "overflow-y-auto"
         }`}
       >

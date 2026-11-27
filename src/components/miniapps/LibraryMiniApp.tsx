@@ -28,7 +28,7 @@ import {
   type SaveHighlightPayload,
 } from "../reader/PdfDocumentView";
 import { EpubDocumentView, type EpubSearchMatch } from "../reader/EpubDocumentView";
-import { storageService } from "../../services/storage";
+import { isTauriRuntime, storageService } from "../../services/storage";
 import {
   AMBIENT_SOUNDSCAPES,
   ambientAudio,
@@ -804,9 +804,14 @@ export function LibraryMiniApp({
         exit={{ opacity: 0 }}
         transition={{ duration: 0.28 }}
         data-testid="library-reader-view"
-        className="theme-chamber absolute inset-0 z-50 isolate flex h-full w-full flex-col overflow-hidden bg-transparent text-[var(--text-ivory)]"
+        className="theme-chamber fixed inset-0 z-50 isolate flex h-screen w-screen flex-col overflow-hidden bg-transparent text-[var(--text-ivory)]"
       >
         <RoomBackdrop roomId="library" />
+
+        {/* Dedicated 32px top flex row reserving space for the transparent desktop titlebar */}
+        {isTauriRuntime() && (
+          <div aria-hidden="true" className="relative z-10 h-8 w-full shrink-0 bg-transparent" />
+        )}
 
         {/* Top Thin Editorial Control Bar */}
         <header className="relative z-10 shrink-0 flex items-center justify-between gap-3 border-b border-[var(--glass-border)] bg-[var(--surface-header)] px-4 py-2.5 backdrop-blur-xl">
